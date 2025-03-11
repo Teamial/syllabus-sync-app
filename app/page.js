@@ -2,11 +2,14 @@
 "use client";
 
 import SyllabusSyncApp from "../components/SyllabusSyncApp";
+import ClientOnly from "../components/ClientOnly";
 
 export default function Home() {
   return (
     <main className="min-h-screen p-8">
-      <SyllabusSyncApp />
+      <ClientOnly>
+        <SyllabusSyncApp />
+      </ClientOnly>
     </main>
   );
 }
