@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import Papa from "papaparse";
-import * as XLSX from "sheetjs";
+import * as XLSX from "xlsx";
 
 const SyllabusSyncApp = () => {
   const [files, setFiles] = useState([]);
