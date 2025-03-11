@@ -1,11 +1,18 @@
 "use client";
-
 import React, { useState, useCallback, useRef } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import FileUploader from "./FileUploader";
 import AssignmentTable from "./AssignmentTable";
 import ExportOptions from "./ExportOptions";
+import {
+  parseDate,
+  formatDate,
+  isDateInPast,
+  extractYearFromSheetName,
+  isTimelineFormat,
+} from "./DateUtils";
+import { processTimelineExcelFile } from "./TimelineParser";
 
 const SyllabusSyncApp = () => {
   const [files, setFiles] = useState([]);
@@ -862,110 +869,9 @@ const SyllabusSyncApp = () => {
     [],
   );
 
-  const processTimelineExcelFile = useCallback(
-    (file) => {
-      return new Promise((resolve, reject) => {
-        if (!file) {
-          reject(new Error("No file provided"));
-          return;
-        }
+  // Improved file processing logic for SyllabusSyncApp.js
 
-        try {
-          const reader = new FileReader();
-
-          reader.onload = (e) => {
-            try {
-              if (!e.target || !e.target.result) {
-                reject(new Error("Failed to read file"));
-                return;
-              }
-
-              const data = new Uint8Array(e.target.result);
-              const workbook = XLSX.read(data, {
-                type: "array",
-                cellDates: true, // Parse dates
-                cellStyles: true,
-                cellFormulas: true,
-                cellNF: true,
-                sheetStubs: true,
-              });
-
-              console.log("Processing timeline Excel file:", file.name);
-              console.log("Sheets:", workbook.SheetNames);
-
-              // Extract course name from file name
-              const courseCodeMatch = file.name.match(
-                /([A-Z]{2,4})\s*(\d{3,4})/i,
-              );
-              let courseName = courseCodeMatch
-                ? courseCodeMatch[0]
-                : file.name.split(".")[0];
-
-              // Process each sheet
-              const allAssignments = [];
-
-              for (const sheetName of workbook.SheetNames) {
-                console.log(`Processing sheet: ${sheetName}`);
-
-                // Try to extract year from sheet name
-                let sheetYear = new Date().getFullYear();
-                const yearMatch = sheetName.match(/(\d{4})_(Spring|Fall)/);
-                if (yearMatch) {
-                  sheetYear = parseInt(yearMatch[1]);
-                  courseName = `${courseName} ${yearMatch[2]} ${sheetYear}`;
-                }
-
-                const sheet = workbook.Sheets[sheetName];
-                const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-
-                // Extract assignments based on the timeline format
-                const sheetAssignments = extractAssignmentsFromTimeline(
-                  jsonData,
-                  sheetName,
-                  sheetYear,
-                  courseName,
-                );
-
-                if (sheetAssignments.length > 0) {
-                  console.log(
-                    `Found ${sheetAssignments.length} assignments in ${sheetName}`,
-                  );
-                  allAssignments.push(...sheetAssignments);
-                }
-              }
-
-              console.log(
-                `Total assignments extracted: ${allAssignments.length}`,
-              );
-              resolve(allAssignments);
-            } catch (error) {
-              console.error("Error processing Excel data:", error);
-              reject(
-                new Error(`Failed to process Excel file: ${error.message}`),
-              );
-            }
-          };
-
-          reader.onerror = (error) => {
-            console.error("FileReader error:", error);
-            reject(
-              new Error(
-                `FileReader error: ${error.message || "Unknown error"}`,
-              ),
-            );
-          };
-
-          reader.readAsArrayBuffer(file);
-        } catch (error) {
-          console.error("Error in Excel processing setup:", error);
-          reject(new Error(`Excel processing setup error: ${error.message}`));
-        }
-      });
-    },
-    [extractAssignmentsFromTimeline],
-  );
-
-  const processFiles = useCallback(async () => {
+  const processFiles = async () => {
     if (!files || files.length === 0) return;
 
     setIsProcessing(true);
@@ -978,10 +884,10 @@ const SyllabusSyncApp = () => {
 
         try {
           const fileType = file.name.split(".").pop().toLowerCase();
-          let assignmentData = []; // Changed from 'data' to 'assignmentData'
+          let assignmentData = [];
 
           if (fileType === "xlsx" || fileType === "xls") {
-            // First, determine if this is a timeline-format Excel file
+            // Determine if this is a timeline-format Excel file
             const reader = new FileReader();
             const buffer = await new Promise((resolve, reject) => {
               reader.onload = (e) => resolve(e.target.result);
@@ -989,7 +895,7 @@ const SyllabusSyncApp = () => {
               reader.readAsArrayBuffer(file);
             });
 
-            const fileData = new Uint8Array(buffer); // Changed from 'data' to 'fileData'
+            const fileData = new Uint8Array(buffer);
             const workbook = XLSX.read(fileData, {
               type: "array",
               cellDates: true,
@@ -997,24 +903,24 @@ const SyllabusSyncApp = () => {
               cellFormulas: true,
             });
 
-            // Check for timeline format by looking at sheet names and structure
+            // Detect if file follows timeline format - checking sheet names and structure
             const isTimelineFormat = workbook.SheetNames.some((name) =>
-              name.match(/Timeline|Fall_|Spring_|Summer_|\d{4}/),
+              name.match(/Timeline|Fall_|Spring_|Summer_|\d{4}/i),
             );
 
             if (isTimelineFormat) {
               console.log(
                 "Detected timeline format, using specialized processing",
               );
-              assignmentData = await processTimelineExcelFile(file);
+              assignmentData = await processTimelineExcelFile(file, XLSX);
             } else {
-              // Use the original Excel processing for standard formats
+              // Use standard Excel processing for non-timeline formats
               assignmentData = await processExcelFile(file);
             }
           } else if (fileType === "csv") {
             assignmentData = await processCSVFile(file);
           } else if (fileType === "pdf") {
-            // In a real implementation, this would use a PDF parsing library
+            // PDF processing would go here
             assignmentData = [
               {
                 fileName: file.name,
@@ -1026,7 +932,7 @@ const SyllabusSyncApp = () => {
               },
             ];
           } else if (fileType === "docx" || fileType === "doc") {
-            // In a real implementation, this would use a DOCX parsing library
+            // DOCX processing would go here
             assignmentData = [
               {
                 fileName: file.name,
@@ -1040,7 +946,38 @@ const SyllabusSyncApp = () => {
           }
 
           if (assignmentData && Array.isArray(assignmentData)) {
-            results.push(...assignmentData);
+            // Filter out assignments with invalid dates or in the past
+            const currentDate = new Date();
+            currentDate.setHours(0, 0, 0, 0); // Start of today
+
+            const validAssignments = assignmentData.filter((item) => {
+              if (
+                !item.dueDate ||
+                item.dueDate === "Not specified in PDF" ||
+                item.dueDate === "Not specified in document"
+              ) {
+                return false;
+              }
+
+              try {
+                // Parse the date if it's not already a Date object
+                const dueDate =
+                  item.dueDate instanceof Date
+                    ? item.dueDate
+                    : new Date(item.dueDate);
+
+                // Check if date is valid and in the future or today
+                return !isNaN(dueDate.getTime()) && dueDate >= currentDate;
+              } catch (e) {
+                console.warn(`Invalid date format: ${item.dueDate}`);
+                return false;
+              }
+            });
+
+            console.log(
+              `Found ${validAssignments.length} valid upcoming assignments from ${file.name}`,
+            );
+            results.push(...validAssignments);
           }
         } catch (fileError) {
           console.error(`Error processing ${file.name}:`, fileError);
@@ -1049,6 +986,13 @@ const SyllabusSyncApp = () => {
         }
       }
 
+      // Sort assignments by due date (closest first)
+      results.sort((a, b) => {
+        const dateA = new Date(a.dueDate);
+        const dateB = new Date(b.dueDate);
+        return dateA - dateB;
+      });
+
       setExtractedData(results);
     } catch (err) {
       console.error("Error processing files:", err);
@@ -1056,13 +1000,7 @@ const SyllabusSyncApp = () => {
     } finally {
       setIsProcessing(false);
     }
-  }, [
-    files,
-    processExcelFile,
-    processCSVFile,
-    processTimelineExcelFile,
-    extractCourseName,
-  ]);
+  };
 
   return (
     <div className="flex flex-col space-y-8 max-w-6xl mx-auto">
