@@ -710,6 +710,261 @@ const SyllabusSyncApp = () => {
     setFiles((prevFiles) => prevFiles.filter((_, i) => i !== index));
   }, []);
 
+  const extractAssignmentsFromTimeline = useCallback(
+    (sheetData, sheetName, sheetYear, courseName) => {
+      const assignments = [];
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // First, look for the header row to determine column structure
+      let headerRowIndex = -1;
+      let dueDateColumns = [];
+
+      // Find the header row and identify columns with due date information
+      for (let i = 0; i < Math.min(10, sheetData.length); i++) {
+        const row = sheetData[i];
+        if (!row) continue;
+
+        // Check if this row contains due date column headers
+        let dueDateFound = false;
+        for (let j = 0; j < row.length; j++) {
+          const cell = row[j];
+          if (
+            cell &&
+            typeof cell === "string" &&
+            /due\s+by|due\s+date/i.test(cell)
+          ) {
+            dueDateColumns.push(j);
+            dueDateFound = true;
+            headerRowIndex = i;
+          }
+        }
+
+        if (dueDateFound) break;
+      }
+
+      // If no due date columns found, try to infer based on typical timeline structure
+      if (dueDateColumns.length === 0) {
+        // For typical timeline format, columns 10-12 often contain assignments
+        dueDateColumns = [9, 10, 11];
+      }
+
+      // Process each row to find assignments
+      for (
+        let i = headerRowIndex > -1 ? headerRowIndex + 1 : 1;
+        i < sheetData.length;
+        i++
+      ) {
+        const row = sheetData[i];
+        if (!row) continue;
+
+        // Extract date from the row if available (for context)
+        let rowDate = null;
+        for (let j = 0; j < row.length; j++) {
+          if (row[j] instanceof Date) {
+            rowDate = row[j];
+            break;
+          }
+        }
+
+        // Get topic/description from the row
+        let description = "";
+        const topicColumns = [5, 7, 8]; // Common topic column indices
+        for (const col of topicColumns) {
+          if (row[col] && typeof row[col] === "string") {
+            description = row[col];
+            break;
+          }
+        }
+
+        // Check each potential assignment column
+        for (const colIndex of dueDateColumns) {
+          if (!row[colIndex]) continue;
+
+          const cell = row[colIndex];
+          if (typeof cell !== "string") continue;
+
+          // Check if this is an assignment cell
+          if (/P&C|HW|Project|Assignment|Quiz|Exam|Midterm|Final/i.test(cell)) {
+            // First try to extract explicit due date
+            let dueDate = null;
+            let title = cell;
+
+            // Check for explicit due date pattern "Due by MM/DD"
+            const dueDateMatch = cell.match(
+              /[Dd]ue\s+[Bb]y\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/,
+            );
+
+            if (dueDateMatch) {
+              let month = parseInt(dueDateMatch[1]);
+              let day = parseInt(dueDateMatch[2]);
+              let year = dueDateMatch[3]
+                ? parseInt(dueDateMatch[3])
+                : sheetYear;
+
+              // If year is 2-digit, convert to 4-digit
+              if (year < 100) {
+                year = year < 50 ? 2000 + year : 1900 + year;
+              }
+
+              // Create a date object for the due date
+              dueDate = new Date(year, month - 1, day);
+
+              // Extract the title by removing the due date portion
+              title = cell
+                .replace(
+                  /\s*[Dd]ue\s+[Bb]y\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?/,
+                  "",
+                )
+                .trim();
+            } else if (rowDate) {
+              // If no explicit due date but row has a date, use it as context
+              // For assignments, typically the date in the row is not the due date
+              // So we'll add some buffer time (1 week is common for assignments)
+              dueDate = new Date(rowDate);
+              dueDate.setDate(dueDate.getDate() + 7); // Add one week
+            }
+
+            // Skip past assignments if a valid date was found
+            if (dueDate && dueDate < today) {
+              continue;
+            }
+
+            // Determine assignment type
+            let type = "Assignment";
+            if (/P&C/i.test(cell)) type = "P&C Activity";
+            else if (/HW|Homework/i.test(cell)) type = "Homework";
+            else if (/Project/i.test(cell)) type = "Project";
+            else if (/Quiz/i.test(cell)) type = "Quiz";
+            else if (/Exam|Midterm|Final/i.test(cell)) type = "Exam";
+
+            // Format the due date as string if available
+            let formattedDate = "";
+            if (dueDate && !isNaN(dueDate.getTime())) {
+              formattedDate = `${dueDate.getMonth() + 1}/${dueDate.getDate()}/${dueDate.getFullYear()}`;
+            }
+
+            // Add the assignment
+            assignments.push({
+              title: title,
+              type: type,
+              dueDate: formattedDate,
+              course: courseName,
+              description: description,
+              fileName: `${courseName} (Timeline)`,
+            });
+          }
+        }
+      }
+
+      return assignments;
+    },
+    [],
+  );
+
+  const processTimelineExcelFile = useCallback(
+    (file) => {
+      return new Promise((resolve, reject) => {
+        if (!file) {
+          reject(new Error("No file provided"));
+          return;
+        }
+
+        try {
+          const reader = new FileReader();
+
+          reader.onload = (e) => {
+            try {
+              if (!e.target || !e.target.result) {
+                reject(new Error("Failed to read file"));
+                return;
+              }
+
+              const data = new Uint8Array(e.target.result);
+              const workbook = XLSX.read(data, {
+                type: "array",
+                cellDates: true, // Parse dates
+                cellStyles: true,
+                cellFormulas: true,
+                cellNF: true,
+                sheetStubs: true,
+              });
+
+              console.log("Processing timeline Excel file:", file.name);
+              console.log("Sheets:", workbook.SheetNames);
+
+              // Extract course name from file name
+              const courseCodeMatch = file.name.match(
+                /([A-Z]{2,4})\s*(\d{3,4})/i,
+              );
+              let courseName = courseCodeMatch
+                ? courseCodeMatch[0]
+                : file.name.split(".")[0];
+
+              // Process each sheet
+              const allAssignments = [];
+
+              for (const sheetName of workbook.SheetNames) {
+                console.log(`Processing sheet: ${sheetName}`);
+
+                // Try to extract year from sheet name
+                let sheetYear = new Date().getFullYear();
+                const yearMatch = sheetName.match(/(\d{4})_(Spring|Fall)/);
+                if (yearMatch) {
+                  sheetYear = parseInt(yearMatch[1]);
+                  courseName = `${courseName} ${yearMatch[2]} ${sheetYear}`;
+                }
+
+                const sheet = workbook.Sheets[sheetName];
+                const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+                // Extract assignments based on the timeline format
+                const sheetAssignments = extractAssignmentsFromTimeline(
+                  jsonData,
+                  sheetName,
+                  sheetYear,
+                  courseName,
+                );
+
+                if (sheetAssignments.length > 0) {
+                  console.log(
+                    `Found ${sheetAssignments.length} assignments in ${sheetName}`,
+                  );
+                  allAssignments.push(...sheetAssignments);
+                }
+              }
+
+              console.log(
+                `Total assignments extracted: ${allAssignments.length}`,
+              );
+              resolve(allAssignments);
+            } catch (error) {
+              console.error("Error processing Excel data:", error);
+              reject(
+                new Error(`Failed to process Excel file: ${error.message}`),
+              );
+            }
+          };
+
+          reader.onerror = (error) => {
+            console.error("FileReader error:", error);
+            reject(
+              new Error(
+                `FileReader error: ${error.message || "Unknown error"}`,
+              ),
+            );
+          };
+
+          reader.readAsArrayBuffer(file);
+        } catch (error) {
+          console.error("Error in Excel processing setup:", error);
+          reject(new Error(`Excel processing setup error: ${error.message}`));
+        }
+      });
+    },
+    [extractAssignmentsFromTimeline],
+  );
+
   const processFiles = useCallback(async () => {
     if (!files || files.length === 0) return;
 
@@ -723,15 +978,44 @@ const SyllabusSyncApp = () => {
 
         try {
           const fileType = file.name.split(".").pop().toLowerCase();
-          let data = [];
+          let assignmentData = []; // Changed from 'data' to 'assignmentData'
 
           if (fileType === "xlsx" || fileType === "xls") {
-            data = await processExcelFile(file);
+            // First, determine if this is a timeline-format Excel file
+            const reader = new FileReader();
+            const buffer = await new Promise((resolve, reject) => {
+              reader.onload = (e) => resolve(e.target.result);
+              reader.onerror = (e) => reject(e);
+              reader.readAsArrayBuffer(file);
+            });
+
+            const fileData = new Uint8Array(buffer); // Changed from 'data' to 'fileData'
+            const workbook = XLSX.read(fileData, {
+              type: "array",
+              cellDates: true,
+              cellStyles: true,
+              cellFormulas: true,
+            });
+
+            // Check for timeline format by looking at sheet names and structure
+            const isTimelineFormat = workbook.SheetNames.some((name) =>
+              name.match(/Timeline|Fall_|Spring_|Summer_|\d{4}/),
+            );
+
+            if (isTimelineFormat) {
+              console.log(
+                "Detected timeline format, using specialized processing",
+              );
+              assignmentData = await processTimelineExcelFile(file);
+            } else {
+              // Use the original Excel processing for standard formats
+              assignmentData = await processExcelFile(file);
+            }
           } else if (fileType === "csv") {
-            data = await processCSVFile(file);
+            assignmentData = await processCSVFile(file);
           } else if (fileType === "pdf") {
             // In a real implementation, this would use a PDF parsing library
-            data = [
+            assignmentData = [
               {
                 fileName: file.name,
                 title: `${file.name} (PDF)`,
@@ -743,7 +1027,7 @@ const SyllabusSyncApp = () => {
             ];
           } else if (fileType === "docx" || fileType === "doc") {
             // In a real implementation, this would use a DOCX parsing library
-            data = [
+            assignmentData = [
               {
                 fileName: file.name,
                 title: `${file.name} (Word Doc)`,
@@ -755,8 +1039,8 @@ const SyllabusSyncApp = () => {
             ];
           }
 
-          if (data && Array.isArray(data)) {
-            results.push(...data);
+          if (assignmentData && Array.isArray(assignmentData)) {
+            results.push(...assignmentData);
           }
         } catch (fileError) {
           console.error(`Error processing ${file.name}:`, fileError);
@@ -772,7 +1056,13 @@ const SyllabusSyncApp = () => {
     } finally {
       setIsProcessing(false);
     }
-  }, [files, processExcelFile, processCSVFile]);
+  }, [
+    files,
+    processExcelFile,
+    processCSVFile,
+    processTimelineExcelFile,
+    extractCourseName,
+  ]);
 
   return (
     <div className="flex flex-col space-y-8 max-w-6xl mx-auto">
