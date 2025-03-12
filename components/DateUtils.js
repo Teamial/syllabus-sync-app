@@ -47,6 +47,22 @@ export function parseDate(dateValue, currentYear = new Date().getFullYear()) {
       return new Date(fullYear, parseInt(month) - 1, parseInt(day));
     }
 
+    // Try to extract date from text patterns
+    const dueDateMatch = dateString.match(
+      /due\s+by\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i,
+    );
+    if (dueDateMatch) {
+      const month = parseInt(dueDateMatch[1]);
+      const day = parseInt(dueDateMatch[2]);
+      let year = dueDateMatch[3] ? parseInt(dueDateMatch[3]) : currentYear;
+
+      if (year < 100) {
+        year += year < 50 ? 2000 : 1900;
+      }
+
+      return new Date(year, month - 1, day);
+    }
+
     return null;
   } catch (e) {
     console.error("Error parsing date:", e, dateValue);
@@ -106,162 +122,63 @@ export function isTimelineFormat(workbook) {
   );
 }
 
-/**
- * Parse P&C Activity due dates using multiple strategies
- */
-export function parsePCActivityDueDate(cellText, rowDate, sheetYear) {
-  if (!cellText) return null;
+// Function to format date in display format
+export function formatDisplayDate(dateStr) {
+  try {
+    if (!dateStr) return "";
 
-  // Check for explicit due date in the cell "Due by MM/DD"
-  const dueDateMatch = cellText.match(
-    /due\s+by\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i,
-  );
-  if (dueDateMatch) {
-    const month = parseInt(dueDateMatch[1]);
-    const day = parseInt(dueDateMatch[2]);
-    let year = dueDateMatch[3] ? parseInt(dueDateMatch[3]) : sheetYear;
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
 
-    // Handle 2-digit years
-    if (year < 100) {
-      year = year < 50 ? 2000 + year : 1900 + year;
-    }
+    // Get day name
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const dayName = dayNames[date.getDay()];
 
-    return new Date(year, month - 1, day);
+    // Format as "Tue, 3/11/2025"
+    return `${dayName}, ${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+  } catch (e) {
+    return dateStr;
   }
-
-  // If we have a row date, P&C activities are typically due within a week
-  if (rowDate) {
-    const dueDate = new Date(rowDate);
-    dueDate.setDate(dueDate.getDate() + 7); // Add one week
-    return dueDate;
-  }
-
-  return null;
 }
 
-/**
- * Parse Homework assignment due dates
- */
-export function parseHomeworkDueDate(cellText, rowDate, sheetYear) {
-  if (!cellText) return null;
+// Calculate days remaining until a date
+export function getDaysRemaining(dateStr) {
+  try {
+    if (!dateStr) return null;
 
-  // Check for explicit due date in the cell "Due by MM/DD"
-  const dueDateMatch = cellText.match(
-    /due\s+by\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i,
-  );
-  if (dueDateMatch) {
-    const month = parseInt(dueDateMatch[1]);
-    const day = parseInt(dueDateMatch[2]);
-    let year = dueDateMatch[3] ? parseInt(dueDateMatch[3]) : sheetYear;
+    const dueDate = new Date(dateStr);
+    if (isNaN(dueDate.getTime())) return null;
 
-    // Handle 2-digit years
-    if (year < 100) {
-      year = year < 50 ? 2000 + year : 1900 + year;
-    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-    return new Date(year, month - 1, day);
-  }
+    const diffTime = dueDate.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-  // If we have a row date, homework assignments are typically due within two weeks
-  if (rowDate) {
-    const dueDate = new Date(rowDate);
-    dueDate.setDate(dueDate.getDate() + 14); // Add two weeks
-    return dueDate;
-  }
-
-  return null;
-}
-
-/**
- * Parse project due dates
- */
-export function parseProjectDueDate(cellText, rowDate, sheetYear) {
-  if (!cellText) return null;
-
-  if (!/project/i.test(cellText)) {
-    return null; // Not a project cell
-  }
-
-  // Format 1: Date in MM/DD/YYYY format
-  const dateMatch = cellText.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (dateMatch) {
-    const month = parseInt(dateMatch[1]);
-    const day = parseInt(dateMatch[2]);
-    const year = parseInt(dateMatch[3]);
-    return new Date(year, month - 1, day);
-  }
-
-  // Format 2: Weekday with date
-  const weekdayMatch = cellText.match(
-    /(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/i,
-  );
-  if (weekdayMatch) {
-    const month = parseInt(weekdayMatch[1]);
-    const day = parseInt(weekdayMatch[2]);
-    let year = weekdayMatch[3] ? parseInt(weekdayMatch[3]) : sheetYear;
-
-    if (year < 100) {
-      year = year < 50 ? 2000 + year : 1900 + year;
-    }
-
-    return new Date(year, month - 1, day);
-  }
-
-  // If project contains "DUE" and we have a row date
-  if (/due/i.test(cellText) && rowDate) {
-    // Projects typically due 2-3 weeks after they're assigned
-    const dueDate = new Date(rowDate);
-    dueDate.setDate(dueDate.getDate() + 21); // 3 weeks after row date
-    return dueDate;
-  }
-
-  return null;
-}
-
-/**
- * Parse exam (midterm/final) dates
- */
-export function parseExamDate(cellText, rowDate, sheetYear) {
-  if (!cellText) return null;
-
-  // Skip cells that are just about review or exam setup
-  if (/review|buffer|opens/i.test(cellText) && !/due|closes/i.test(cellText)) {
+    return diffDays;
+  } catch (e) {
     return null;
   }
+}
 
-  let examType = "Exam";
-  if (/midterm/i.test(cellText)) {
-    examType = "Midterm Exam";
-  } else if (/final/i.test(cellText)) {
-    examType = "Final Exam";
-  } else if (!/exam/i.test(cellText)) {
-    return null; // Not an exam at all
-  }
+// Get text description for days remaining
+export function getDaysRemainingText(dateStr) {
+  const days = getDaysRemaining(dateStr);
+  if (days === null) return "";
 
-  // Try to extract explicit date
-  const dateMatch = cellText.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
-  let dueDate = null;
+  if (days === 0) return "Due today";
+  if (days === 1) return "Due tomorrow";
+  if (days < 0) return `Overdue by ${Math.abs(days)} days`;
+  return `Due in ${days} days`;
+}
 
-  if (dateMatch) {
-    const month = parseInt(dateMatch[1]);
-    const day = parseInt(dateMatch[2]);
-    let year = dateMatch[3] ? parseInt(dateMatch[3]) : sheetYear;
+// Get CSS class for days remaining
+export function getDaysRemainingClass(dateStr) {
+  const days = getDaysRemaining(dateStr);
+  if (days === null) return "";
 
-    if (year < 100) {
-      year = year < 50 ? 2000 + year : 1900 + year;
-    }
-
-    dueDate = new Date(year, month - 1, day);
-  } else if (rowDate) {
-    dueDate = new Date(rowDate);
-  }
-
-  if (!dueDate || isNaN(dueDate.getTime())) {
-    return null;
-  }
-
-  return {
-    date: dueDate,
-    type: examType,
-  };
+  if (days < 0) return "text-red-600 dark:text-red-400";
+  if (days <= 1) return "text-orange-600 dark:text-orange-400";
+  if (days <= 3) return "text-yellow-600 dark:text-yellow-400";
+  return "text-green-600 dark:text-green-400";
 }

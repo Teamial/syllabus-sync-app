@@ -2,7 +2,12 @@
 
 import React from "react";
 
-const ExportOptions = ({ exportFormat, setExportFormat, onExport, disabled }) => {
+const ExportOptions = ({
+  exportFormat,
+  setExportFormat,
+  onExport,
+  disabled,
+}) => {
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">
@@ -33,17 +38,14 @@ const ExportOptions = ({ exportFormat, setExportFormat, onExport, disabled }) =>
           Export Data
         </button>
       </div>
-      
+
       <div className="text-sm text-gray-500 dark:text-gray-400 italic">
-        {exportFormat === "powerplanner" && 
-          "Exports in Power Planner format for easy import into the Power Planner app"
-        }
-        {exportFormat === "ics" && 
-          "Exports as an ICS file that can be imported into most calendar applications"
-        }
-        {exportFormat === "csv" && 
-          "Exports as a generic CSV file that can be opened in spreadsheet applications"
-        }
+        {exportFormat === "powerplanner" &&
+          "Exports in Power Planner format for easy import into the Power Planner app"}
+        {exportFormat === "ics" &&
+          "Exports as an ICS file that can be imported into most calendar applications"}
+        {exportFormat === "csv" &&
+          "Exports as a generic CSV file that can be opened in spreadsheet applications"}
       </div>
     </div>
   );

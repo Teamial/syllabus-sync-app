@@ -1,224 +1,614 @@
-"use client";
-import React, { useState, useCallback, useRef } from "react";
-import Papa from "papaparse";
+import React, { useState, useCallback } from "react";
 import * as XLSX from "xlsx";
+import Papa from "papaparse";
 import FileUploader from "./FileUploader";
 import AssignmentTable from "./AssignmentTable";
 import ExportOptions from "./ExportOptions";
-import PowerPlannerExport from "./PowerPlannerExport";
 import {
   parseDate,
   formatDate,
   isDateInPast,
   extractYearFromSheetName,
-  isTimelineFormat,
 } from "./DateUtils";
-import { processTimelineExcelFile } from "./TimelineParser";
+import {
+  parsePCActivityDueDate,
+  parseHomeworkDueDate,
+  parseExamDate,
+  parseProjectDueDate,
+  formatForPowerPlanner,
+  generateCSV,
+} from "./TimelineParser";
 
-const SyllabusSyncApp = () => {
+export default function SyllabusSyncApp() {
+  // State management
   const [files, setFiles] = useState([]);
   const [extractedData, setExtractedData] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [exportFormat, setExportFormat] = useState("powerplanner");
   const [error, setError] = useState(null);
-  const [showPowerPlannerExport, setShowPowerPlannerExport] = useState(false);
+  const [showPowerPlannerOptions, setShowPowerPlannerOptions] = useState(false);
   const [courseOverride, setCourseOverride] = useState("");
 
-  // Create refs to avoid the circular dependencies in useCallback
-  const extractedDataRef = useRef([]);
+  // Handle file upload
+  const handleFilesUploaded = useCallback((newFiles) => {
+    setFiles((prevFiles) => [...prevFiles, ...newFiles]);
+    setError(null);
+  }, []);
 
-  // Update ref when state changes
-  React.useEffect(() => {
-    extractedDataRef.current = extractedData;
-  }, [extractedData]);
+  // Handle file removal
+  const handleRemoveFile = useCallback((index) => {
+    setFiles((prevFiles) => prevFiles.filter((_, i) => i !== index));
+  }, []);
 
-  // Helper functions
-  const extractCourseName = (fileName) => {
-    // Remove extension
-    const nameWithoutExt = fileName.split(".")[0];
-
-    // Try to extract course code patterns (e.g., CS101, MATH 240, etc.)
-    const courseCodeMatch = nameWithoutExt.match(/([A-Z]{2,4})\s*(\d{3,4})/i);
-    if (courseCodeMatch) {
-      return courseCodeMatch[0];
+  // Extract course code from filename
+  const extractCourseCode = (fileName) => {
+    // Regular expression to match common course code patterns (e.g., CS101, MATH 240)
+    const courseMatch = fileName.match(/([A-Z]{2,4})\s*(\d{3,4})/i);
+    if (courseMatch) {
+      return `${courseMatch[1]} ${courseMatch[2]}`;
     }
 
-    // Fall back to the file name without extension
-    return nameWithoutExt;
+    // If no match, return just the filename without extension
+    return fileName.split(".")[0];
   };
 
-  // Helper function to format dates into Power Planner's expected format
-  const formatDateForPowerPlanner = useCallback((dateString) => {
-    try {
-      // Handle various date formats
-      let date;
-      if (dateString.match(/^\d{1,2}\/\d{1,2}\/\d{2,4}$/)) {
-        // MM/DD/YYYY format
-        date = new Date(dateString);
-      } else if (dateString.match(/^\d{4}-\d{1,2}-\d{1,2}$/)) {
-        // YYYY-MM-DD format
-        date = new Date(dateString);
-      } else {
-        // Try to parse other formats or return as is if can't parse
-        date = new Date(dateString);
-        if (isNaN(date.getTime())) {
-          return dateString;
+  // Process Excel files
+  const processExcelFile = async (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, {
+            type: "array",
+            cellDates: true,
+            cellStyles: true,
+          });
+
+          // Extract course name from filename
+          const courseName = extractCourseCode(file.name);
+
+          // Get current year for context
+          const currentYear = new Date().getFullYear();
+
+          // Extract semester if available
+          let semester = "Spring";
+          if (file.name.toLowerCase().includes("fall")) {
+            semester = "Fall";
+          } else if (file.name.toLowerCase().includes("summer")) {
+            semester = "Summer";
+          }
+
+          // Process assignments from all sheets
+          const assignments = [];
+
+          for (const sheetName of workbook.SheetNames) {
+            // Skip sheets that look like they contain metadata/info
+            if (/info|metadata|readme|about/i.test(sheetName)) continue;
+
+            // Extract year from sheet name if present
+            const sheetYear =
+              extractYearFromSheetName(sheetName) || currentYear;
+
+            const sheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+            // Skip empty sheets
+            if (!jsonData || jsonData.length < 2) continue;
+
+            // Analyze sheet structure to identify date columns and assignment columns
+            const columnMap = analyzeSheetStructure(jsonData);
+
+            // Process rows to extract assignments
+            for (let i = 1; i < jsonData.length; i++) {
+              const row = jsonData[i];
+              if (!row || row.length === 0) continue;
+
+              // Get row date
+              let rowDate = null;
+              if (columnMap.dateColumn !== -1 && row[columnMap.dateColumn]) {
+                if (row[columnMap.dateColumn] instanceof Date) {
+                  rowDate = row[columnMap.dateColumn];
+                } else {
+                  const dateValue = row[columnMap.dateColumn];
+                  rowDate = parseDate(dateValue, sheetYear);
+                }
+              }
+
+              // Skip rows without dates
+              if (!rowDate) continue;
+
+              // Skip dates in the past
+              if (isDateInPast(rowDate)) continue;
+
+              // Process homework assignments
+              for (const col of columnMap.hwColumns) {
+                if (row[col] && typeof row[col] === "string") {
+                  const text = row[col];
+                  if (/hw|homework/i.test(text)) {
+                    const hwMatch = text.match(/(?:hw|homework)\s*(\d+)/i);
+                    const hwNum = hwMatch ? hwMatch[1] : "";
+
+                    // Get due date - either explicit or based on row date
+                    const dueDate =
+                      parseHomeworkDueDate(text, rowDate, sheetYear) || rowDate;
+
+                    assignments.push({
+                      title: `Homework ${hwNum}`,
+                      dueDate: formatDate(dueDate),
+                      course: courseName,
+                      description:
+                        getTopicText(row, columnMap) +
+                        (text ? ` - ${text}` : ""),
+                      type: "Homework",
+                      fileName: file.name,
+                    });
+                  }
+                }
+              }
+
+              // Process P&C Activities
+              for (const col of columnMap.pcColumns) {
+                if (row[col] && typeof row[col] === "string") {
+                  const text = row[col];
+                  if (/p&c|activity/i.test(text)) {
+                    const activityMatch = text.match(
+                      /(?:activity|p&c)\s*(\d+)/i,
+                    );
+                    const activityNum = activityMatch ? activityMatch[1] : "";
+
+                    // Get due date
+                    const dueDate =
+                      parsePCActivityDueDate(text, rowDate, sheetYear) ||
+                      rowDate;
+
+                    assignments.push({
+                      title: `P&C Activity ${activityNum}`,
+                      dueDate: formatDate(dueDate),
+                      course: courseName,
+                      description:
+                        getTopicText(row, columnMap) +
+                        (text ? ` - ${text}` : ""),
+                      type: "P&C Activity",
+                      fileName: file.name,
+                    });
+                  }
+                }
+              }
+
+              // Process Projects
+              for (const col of columnMap.projectColumns) {
+                if (row[col] && typeof row[col] === "string") {
+                  const text = row[col];
+                  if (/project/i.test(text)) {
+                    const projectMatch = text.match(/project\s*(\d+)/i);
+                    const projectNum = projectMatch ? projectMatch[1] : "";
+
+                    // Get due date
+                    const dueDate =
+                      parseProjectDueDate(text, rowDate, sheetYear) || rowDate;
+
+                    assignments.push({
+                      title: `Project ${projectNum}`,
+                      dueDate: formatDate(dueDate),
+                      course: courseName,
+                      description:
+                        getTopicText(row, columnMap) +
+                        (text ? ` - ${text}` : ""),
+                      type: "Project",
+                      fileName: file.name,
+                    });
+                  }
+                }
+              }
+
+              // Process Exams
+              for (const col of columnMap.examColumns) {
+                if (row[col] && typeof row[col] === "string") {
+                  const text = row[col];
+                  if (/exam|midterm|final/i.test(text)) {
+                    const examInfo = parseExamDate(text, rowDate, sheetYear);
+
+                    if (examInfo) {
+                      assignments.push({
+                        title: examInfo.type,
+                        dueDate: formatDate(examInfo.date),
+                        course: courseName,
+                        description:
+                          getTopicText(row, columnMap) +
+                          (text ? ` - ${text}` : ""),
+                        type: examInfo.type,
+                        fileName: file.name,
+                      });
+                    }
+                  }
+                }
+              }
+
+              // Also scan topic columns for embedded assignments
+              for (const col of columnMap.topicColumns) {
+                if (row[col] && typeof row[col] === "string") {
+                  const text = row[col].toLowerCase();
+
+                  // Look for embedded project references
+                  if (
+                    text.includes("project") &&
+                    (text.includes("due") || text.includes("submit"))
+                  ) {
+                    const projectMatch = text.match(/project\s*(\d+)/i);
+                    const projectNum = projectMatch ? projectMatch[1] : "";
+
+                    assignments.push({
+                      title: `Project ${projectNum}`,
+                      dueDate: formatDate(rowDate),
+                      course: courseName,
+                      description: row[col],
+                      type: "Project",
+                      fileName: file.name,
+                    });
+                  }
+
+                  // Look for embedded exam references
+                  if (
+                    (text.includes("midterm") || text.includes("final")) &&
+                    text.includes("exam")
+                  ) {
+                    const examType = text.includes("midterm")
+                      ? "Midterm Exam"
+                      : "Final Exam";
+
+                    assignments.push({
+                      title: examType,
+                      dueDate: formatDate(rowDate),
+                      course: courseName,
+                      description: row[col],
+                      type: examType,
+                      fileName: file.name,
+                    });
+                  }
+                }
+              }
+            }
+          }
+
+          resolve(assignments);
+        } catch (error) {
+          console.error("Error processing Excel data:", error);
+          reject(new Error(`Failed to process Excel file: ${error.message}`));
         }
-      }
+      };
 
-      // Format as MM/DD/YYYY which Power Planner accepts
-      return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
-    } catch (e) {
-      console.error("Error formatting date:", e);
-      return dateString;
-    }
-  }, []);
+      reader.onerror = (error) => {
+        reject(
+          new Error(`FileReader error: ${error.message || "Unknown error"}`),
+        );
+      };
 
-  const downloadFile = useCallback((content, filename, contentType) => {
-    try {
-      const blob = new Blob([content], {
-        type: `${contentType};charset=utf-8;`,
-      });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.setAttribute("download", filename);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error("Error downloading file:", err);
-      setError(`Failed to download file: ${err.message}`);
-    }
-  }, []);
+      reader.readAsArrayBuffer(file);
+    });
+  };
 
-  // Export functions defined outside of useCallback to avoid circular dependencies
-  const exportToPowerPlanner = useCallback(() => {
-    try {
-      const data = extractedDataRef.current;
-      if (!data || data.length === 0) return;
-
-      // Format data according to Power Planner's CSV import format
-      const powerPlannerFormat = data.map((item) => ({
-        Name: item.title || "Unnamed Assignment",
-        Class: courseOverride || item.course || "Unknown Course",
-        DueDate: formatDateForPowerPlanner(item.dueDate || ""),
-        Details: item.description || "",
-        Type: mapAssignmentType(item.type) || "Assignment",
-      }));
-
-      // Convert to CSV
-      const csv = Papa.unparse(powerPlannerFormat);
-      downloadFile(csv, "power_planner_import.csv", "text/csv");
-    } catch (err) {
-      console.error("Error exporting to Power Planner:", err);
-      setError(`Failed to export to Power Planner: ${err.message}`);
-    }
-  }, [downloadFile, formatDateForPowerPlanner, courseOverride]);
-
-  // Map assignment types to Power Planner compatible types
-  const mapAssignmentType = (type) => {
-    if (!type) return "Assignment";
-
-    // Power Planner supports these assignment types
-    const typeMap = {
-      Homework: "Homework",
-      HW: "Homework",
-      "P&C Activity": "Activity",
-      "PC Activity": "Activity",
-      Project: "Project",
-      Exam: "Exam",
-      Midterm: "Exam",
-      "Midterm Exam": "Exam",
-      Final: "Exam",
-      "Final Exam": "Exam",
-      Quiz: "Quiz",
-      Test: "Test",
+  // Analyze sheet structure to identify important columns
+  const analyzeSheetStructure = (jsonData) => {
+    const columnMap = {
+      dateColumn: -1,
+      hwColumns: [],
+      pcColumns: [],
+      projectColumns: [],
+      examColumns: [],
+      topicColumns: [],
     };
 
-    return typeMap[type] || type;
+    // Look at the header row first (typically row 0)
+    const headerRow = jsonData[0];
+    if (!headerRow) return columnMap;
+
+    for (let i = 0; i < headerRow.length; i++) {
+      if (!headerRow[i]) continue;
+
+      const header = headerRow[i].toString().toLowerCase();
+
+      if (header.includes("date")) {
+        columnMap.dateColumn = i;
+      } else if (header.includes("topic") || header.includes("lecture")) {
+        columnMap.topicColumns.push(i);
+      } else if (header.includes("hw") || header.includes("homework")) {
+        columnMap.hwColumns.push(i);
+      } else if (header.includes("p&c") || header.includes("activity")) {
+        columnMap.pcColumns.push(i);
+      } else if (header.includes("project")) {
+        columnMap.projectColumns.push(i);
+      } else if (
+        header.includes("exam") ||
+        header.includes("midterm") ||
+        header.includes("final")
+      ) {
+        columnMap.examColumns.push(i);
+      }
+    }
+
+    // If no date column found, try to guess it (common in academic schedules)
+    if (columnMap.dateColumn === -1) {
+      // Try column 0 or 1, common positions for dates
+      columnMap.dateColumn = 1;
+    }
+
+    // Second pass through a few rows to find columns that contain assignment indicators
+    if (
+      columnMap.hwColumns.length === 0 ||
+      columnMap.pcColumns.length === 0 ||
+      columnMap.projectColumns.length === 0 ||
+      columnMap.examColumns.length === 0
+    ) {
+      // Check first 5 rows for common patterns
+      for (let rowIdx = 1; rowIdx < Math.min(5, jsonData.length); rowIdx++) {
+        const row = jsonData[rowIdx];
+        if (!row) continue;
+
+        for (let colIdx = 0; colIdx < row.length; colIdx++) {
+          const cell = row[colIdx];
+          if (!cell || typeof cell !== "string") continue;
+
+          const cellText = cell.toLowerCase();
+
+          if (cellText.includes("hw") || cellText.includes("homework")) {
+            if (!columnMap.hwColumns.includes(colIdx)) {
+              columnMap.hwColumns.push(colIdx);
+            }
+          }
+
+          if (cellText.includes("p&c") || cellText.includes("activity")) {
+            if (!columnMap.pcColumns.includes(colIdx)) {
+              columnMap.pcColumns.push(colIdx);
+            }
+          }
+
+          if (cellText.includes("project")) {
+            if (!columnMap.projectColumns.includes(colIdx)) {
+              columnMap.projectColumns.push(colIdx);
+            }
+          }
+
+          if (
+            cellText.includes("exam") ||
+            cellText.includes("midterm") ||
+            cellText.includes("final")
+          ) {
+            if (!columnMap.examColumns.includes(colIdx)) {
+              columnMap.examColumns.push(colIdx);
+            }
+          }
+        }
+      }
+    }
+
+    return columnMap;
   };
 
-  const exportToCSV = useCallback(() => {
-    try {
-      const data = extractedDataRef.current;
-      if (!data || data.length === 0) return;
+  // Get topic text from row
+  const getTopicText = (row, columnMap) => {
+    if (columnMap.topicColumns.length === 0) return "";
 
-      // Generic CSV export with all fields
-      const csv = Papa.unparse(data);
-      downloadFile(csv, "assignments_export.csv", "text/csv");
-    } catch (err) {
-      console.error("Error exporting to CSV:", err);
-      setError(`Failed to export to CSV: ${err.message}`);
+    let topicText = "";
+    for (const col of columnMap.topicColumns) {
+      if (row[col] && typeof row[col] === "string") {
+        if (topicText) topicText += " - ";
+        topicText += row[col];
+      }
     }
-  }, [downloadFile]);
 
-  const exportToICS = useCallback(() => {
-    try {
-      const data = extractedDataRef.current;
-      if (!data || data.length === 0) return;
+    return topicText;
+  };
 
-      // Simple ICS calendar generation
-      let icsContent = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//SyllabusSyncTool//EN",
-        "CALSCALE:GREGORIAN",
-        "METHOD:PUBLISH",
-      ];
+  // Process CSV files
+  const processCSVFile = async (file) => {
+    return new Promise((resolve, reject) => {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        dynamicTyping: true,
+        complete: (results) => {
+          try {
+            if (results.errors && results.errors.length > 0) {
+              console.warn("CSV parsing had errors:", results.errors);
+            }
 
-      data.forEach((item) => {
-        try {
-          // Try to parse the date
-          const dueDate = new Date(item.dueDate || "");
+            // Extract course name from filename
+            const courseName = extractCourseCode(file.name);
 
-          // Skip items with invalid dates
-          if (isNaN(dueDate.getTime())) return;
+            // Process the data
+            const assignments = [];
 
-          // Format date as required by ICS
-          const formatDate = (date) => {
-            return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
-          };
+            for (const row of results.data) {
+              // Skip empty rows
+              if (!row || Object.keys(row).length === 0) continue;
 
-          const formattedDate = formatDate(dueDate);
+              // Find due date in various column names
+              const dueDate = findValueFromVariants(row, [
+                "Due Date",
+                "Due",
+                "Deadline",
+                "Date",
+              ]);
 
-          icsContent.push(
-            "BEGIN:VEVENT",
-            `UID:${Math.random().toString(36).substring(2)}@syllabus-sync.app`,
-            `DTSTAMP:${formatDate(new Date())}`,
-            `DTSTART:${formattedDate}`,
-            `DTEND:${formattedDate}`,
-            `SUMMARY:${item.title || "Unnamed Assignment"}`,
-            `DESCRIPTION:${item.description || ""}`,
-            `LOCATION:${item.course || "Unknown Course"}`,
-            `CATEGORIES:${item.type || "Assignment"}`,
-            "END:VEVENT",
-          );
-        } catch (err) {
-          console.warn(`Could not add event to ICS file: ${err.message}`);
-        }
+              // Skip if no due date
+              if (!dueDate) continue;
+
+              // Parse the date
+              const parsedDate = parseDate(dueDate);
+
+              // Skip invalid dates or dates in the past
+              if (!parsedDate || isDateInPast(parsedDate)) continue;
+
+              // Format the date
+              const formattedDate = formatDate(parsedDate);
+
+              // Get title from various column names
+              const title =
+                findValueFromVariants(row, [
+                  "Title",
+                  "Assignment",
+                  "Task",
+                  "Name",
+                ]) || "Unnamed Assignment";
+
+              // Get description from various column names
+              const description =
+                findValueFromVariants(row, [
+                  "Description",
+                  "Details",
+                  "Notes",
+                ]) || "";
+
+              // Get type from various column names
+              const type =
+                findValueFromVariants(row, ["Type", "Category"]) ||
+                "Assignment";
+
+              // Add to assignments
+              assignments.push({
+                title,
+                dueDate: formattedDate,
+                course:
+                  findValueFromVariants(row, ["Course", "Class"]) || courseName,
+                description,
+                type,
+                fileName: file.name,
+              });
+            }
+
+            resolve(assignments);
+          } catch (error) {
+            console.error("Error processing CSV data:", error);
+            reject(new Error(`Failed to process CSV data: ${error.message}`));
+          }
+        },
+        error: (error) => {
+          console.error("Papa Parse error:", error);
+          reject(new Error(`CSV parsing error: ${error.message}`));
+        },
       });
+    });
+  };
 
-      icsContent.push("END:VCALENDAR");
-
-      downloadFile(
-        icsContent.join("\r\n"),
-        "assignments_calendar.ics",
-        "text/calendar",
-      );
-    } catch (err) {
-      console.error("Error exporting to ICS:", err);
-      setError(`Failed to export to ICS: ${err.message}`);
+  // Find value from multiple possible column names
+  const findValueFromVariants = (row, variants) => {
+    for (const variant of variants) {
+      if (
+        row[variant] !== undefined &&
+        row[variant] !== null &&
+        row[variant] !== ""
+      ) {
+        return row[variant];
+      }
     }
-  }, [downloadFile]);
+    return null;
+  };
 
-  const handleExport = useCallback(() => {
-    if (extractedDataRef.current.length === 0) return;
+  // Export functions
+  const downloadFile = (content, filename, contentType) => {
+    const blob = new Blob([content], { type: contentType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Export to Power Planner
+  const exportToPowerPlanner = () => {
+    if (!extractedData || extractedData.length === 0) return;
+
+    // Format for Power Planner
+    const formattedData = formatForPowerPlanner(extractedData, courseOverride);
+
+    // Generate CSV
+    const csv = generateCSV(formattedData);
+
+    // Download
+    downloadFile(csv, "power_planner_import.csv", "text/csv;charset=utf-8;");
+  };
+
+  // Export to generic CSV
+  const exportToCSV = () => {
+    if (!extractedData || extractedData.length === 0) return;
+
+    // Simple CSV export
+    const csv = Papa.unparse(extractedData);
+
+    // Download
+    downloadFile(csv, "assignments_export.csv", "text/csv;charset=utf-8;");
+  };
+
+  // Export to ICS calendar
+  const exportToICS = () => {
+    if (!extractedData || extractedData.length === 0) return;
+
+    // Generate ICS calendar content
+    let icsContent = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//SyllabusSyncTool//EN",
+      "CALSCALE:GREGORIAN",
+      "METHOD:PUBLISH",
+    ];
+
+    // Add each assignment as an event
+    for (const item of extractedData) {
+      try {
+        // Parse the due date
+        const dueDate = new Date(item.dueDate);
+
+        // Skip if invalid
+        if (isNaN(dueDate.getTime())) continue;
+
+        // Format to ICS date format
+        const formatICSDate = (date) => {
+          return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+        };
+
+        const icsDate = formatICSDate(dueDate);
+
+        // Add event
+        icsContent.push(
+          "BEGIN:VEVENT",
+          `UID:${Math.random().toString(36).substring(2)}@syllabus-sync.app`,
+          `DTSTAMP:${formatICSDate(new Date())}`,
+          `DTSTART:${icsDate}`,
+          `DTEND:${icsDate}`,
+          `SUMMARY:${item.title || "Assignment"}`,
+          `DESCRIPTION:${item.description || ""}`,
+          `LOCATION:${item.course || ""}`,
+          `CATEGORIES:${item.type || "Assignment"}`,
+          "END:VEVENT",
+        );
+      } catch (e) {
+        console.warn("Could not add event to ICS:", e);
+      }
+    }
+
+    // Close calendar
+    icsContent.push("END:VCALENDAR");
+
+    // Download
+    downloadFile(
+      icsContent.join("\r\n"),
+      "assignments_calendar.ics",
+      "text/calendar",
+    );
+  };
+
+  // Handle export button click
+  const handleExport = () => {
+    if (extractedData.length === 0) return;
 
     try {
       if (exportFormat === "powerplanner") {
-        setShowPowerPlannerExport(true);
+        setShowPowerPlannerOptions(true);
       } else if (exportFormat === "ics") {
         exportToICS();
       } else if (exportFormat === "csv") {
@@ -226,428 +616,73 @@ const SyllabusSyncApp = () => {
       }
     } catch (err) {
       console.error("Export error:", err);
-      setError(`Failed to export data: ${err.message}`);
+      setError(`Export failed: ${err.message}`);
     }
-  }, [exportFormat, exportToICS, exportToCSV]);
+  };
 
-  const processCSVFile = useCallback((file) => {
-    return new Promise((resolve, reject) => {
-      if (!file) {
-        reject(new Error("No file provided"));
-        return;
-      }
-
-      try {
-        Papa.parse(file, {
-          header: true,
-          complete: (results) => {
-            try {
-              if (results.errors && results.errors.length > 0) {
-                console.warn("CSV parsing had errors:", results.errors);
-              }
-
-              const today = new Date();
-              today.setHours(0, 0, 0, 0);
-
-              const assignments = results.data
-                .filter(
-                  (row) =>
-                    row &&
-                    typeof row === "object" &&
-                    Object.keys(row).length > 0,
-                )
-                .map((row) => {
-                  // Extract the due date
-                  const dueDate =
-                    row.Due || row["Due Date"] || row.Deadline || row.Date;
-
-                  // Skip if no due date
-                  if (!dueDate) return null;
-
-                  // Parse the date
-                  const parsedDate = new Date(dueDate);
-
-                  // Skip if date is invalid or in the past
-                  if (isNaN(parsedDate.getTime()) || parsedDate < today) {
-                    return null;
-                  }
-
-                  // Format the date
-                  const formattedDate = `${parsedDate.getMonth() + 1}/${parsedDate.getDate()}/${parsedDate.getFullYear()}`;
-
-                  return {
-                    title:
-                      row.Assignment ||
-                      row.Title ||
-                      row.Task ||
-                      row.Name ||
-                      "Unnamed Assignment",
-                    dueDate: formattedDate,
-                    course:
-                      row.Course || row.Class || extractCourseName(file.name),
-                    description:
-                      row.Description || row.Details || row.Notes || "",
-                    type: row.Type || row.Category || "Assignment",
-                    fileName: file.name,
-                  };
-                })
-                .filter((item) => item !== null);
-
-              resolve(assignments);
-            } catch (error) {
-              console.error("Error processing CSV data:", error);
-              reject(new Error(`Failed to process CSV data: ${error.message}`));
-            }
-          },
-          error: (error) => {
-            console.error("Papa Parse error:", error);
-            reject(new Error(`CSV parsing error: ${error.message}`));
-          },
-        });
-      } catch (error) {
-        console.error("Error in CSV processing setup:", error);
-        reject(new Error(`CSV processing setup error: ${error.message}`));
-      }
-    });
-  }, []);
-
-  const handleFilesUploaded = useCallback((acceptedFiles) => {
-    if (!acceptedFiles || !Array.isArray(acceptedFiles)) return;
-
-    setFiles((prevFiles) => [...prevFiles, ...acceptedFiles]);
-    // Clear any previous errors when new files are uploaded
-    setError(null);
-  }, []);
-
-  const handleRemoveFile = useCallback((index) => {
-    setFiles((prevFiles) => prevFiles.filter((_, i) => i !== index));
-  }, []);
-
-  const handlePowerPlannerExport = useCallback(() => {
-    exportToPowerPlanner();
-    setShowPowerPlannerExport(false);
-  }, [exportToPowerPlanner]);
-
+  // Process all uploaded files
   const processFiles = async () => {
     if (!files || files.length === 0) return;
 
     setIsProcessing(true);
     setError(null);
-    const results = [];
+    setExtractedData([]);
 
     try {
-      for (const file of files) {
-        if (!file || !file.name) continue;
+      const allAssignments = [];
 
+      for (const file of files) {
         try {
           const fileType = file.name.split(".").pop().toLowerCase();
-          let assignmentData = [];
 
           if (fileType === "xlsx" || fileType === "xls") {
-            const reader = new FileReader();
-            const buffer = await new Promise((resolve, reject) => {
-              reader.onload = (e) => resolve(e.target.result);
-              reader.onerror = (e) => reject(e);
-              reader.readAsArrayBuffer(file);
-            });
-
-            const fileData = new Uint8Array(buffer);
-            const workbook = XLSX.read(fileData, {
-              type: "array",
-              cellDates: true,
-              cellStyles: true,
-            });
-
-            // Extract course code from filename
-            const courseMatch = file.name.match(/([A-Z]{2,4})\s*(\d{3,4})/i);
-            const courseName = courseMatch
-              ? courseMatch[0]
-              : file.name.split(".")[0];
-
-            console.log(
-              `Processing file: ${file.name} for course: ${courseName}`,
-            );
-
-            // Check if this is a timeline format file
-            if (isTimelineFormat(workbook)) {
-              console.log("Detected timeline format, using specialized parser");
-              try {
-                // Use the specialized timeline parser
-                const timelineAssignments = await processTimelineExcelFile(
-                  file,
-                  XLSX,
-                  true,
-                );
-                assignmentData = timelineAssignments;
-              } catch (timelineError) {
-                console.error(
-                  "Timeline parser failed, falling back to standard parser:",
-                  timelineError,
-                );
-                // Fall back to standard processing if timeline parser fails
-              }
-            }
-
-            // If timeline parser didn't yield results, use standard parser
-            if (assignmentData.length === 0) {
-              // Get current date for filtering
-              const today = new Date();
-              today.setHours(0, 0, 0, 0);
-
-              // Improved assignment tracking to avoid duplicates
-              const processedAssignments = new Set();
-
-              // Process each sheet
-              for (const sheetName of workbook.SheetNames) {
-                console.log(`Processing sheet: ${sheetName}`);
-                // Extract sheet year if present (for date context)
-                const sheetYear = extractYearFromSheetName(sheetName);
-
-                const worksheet = workbook.Sheets[sheetName];
-                const jsonData = XLSX.utils.sheet_to_json(worksheet, {
-                  header: 1,
-                });
-
-                // Skip empty sheets
-                if (!jsonData || jsonData.length <= 1) continue;
-
-                // Process each row
-                for (let i = 0; i < jsonData.length; i++) {
-                  const row = jsonData[i];
-                  if (!row || !Array.isArray(row)) continue;
-
-                  // First, check if any cell in the row contains a date
-                  let rowDate = null;
-                  for (let j = 0; j < row.length; j++) {
-                    const cell = row[j];
-                    if (cell instanceof Date) {
-                      rowDate = new Date(cell);
-                      rowDate.setHours(0, 0, 0, 0);
-                      break;
-                    }
-                  }
-
-                  // Get topic/context for this row
-                  let topic = "";
-                  if (row[5] && typeof row[5] === "string") {
-                    topic = row[5];
-                  } else if (row[7] && typeof row[7] === "string") {
-                    topic = row[7];
-                  }
-
-                  // Process each cell that might contain assignment data
-                  for (let j = 0; j < row.length; j++) {
-                    const cell = row[j];
-                    if (!cell || typeof cell !== "string") continue;
-
-                    // Skip processing cells that don't look like they contain assignments
-                    if (
-                      !/hw|homework|p&c|project|exam|midterm|final|quiz|assignment|due/i.test(
-                        cell,
-                      )
-                    ) {
-                      continue;
-                    }
-
-                    // Process due dates using DateUtils
-                    let dueDate = null;
-                    let title = cell;
-                    let type = "Assignment";
-                    let description = topic || "";
-
-                    // Use DateUtils to parse and validate dates
-                    if (/p&c/i.test(cell.toLowerCase())) {
-                      // Use specialized P&C Activity handler from DateUtils
-                      type = "P&C Activity";
-                      dueDate = parseDate(cell, sheetYear);
-
-                      // If no explicit date found, try to extract it
-                      if (!dueDate && rowDate) {
-                        // Use row date as context
-                        dueDate = rowDate;
-
-                        // Add one week for P&C activities (typical deadline)
-                        const dueDateWithOffset = new Date(dueDate);
-                        dueDateWithOffset.setDate(
-                          dueDateWithOffset.getDate() + 7,
-                        );
-                        dueDate = dueDateWithOffset;
-                      }
-
-                      // Extract activity number if present
-                      const pcMatch = cell.match(
-                        /p&c\s*(?:activity)?\s*(\d+)/i,
-                      );
-                      if (pcMatch) {
-                        title = `P&C Activity ${pcMatch[1]}`;
-                      } else {
-                        title = "P&C Activity";
-                      }
-                    } else if (/homework|hw/i.test(cell.toLowerCase())) {
-                      type = "Homework";
-                      dueDate = parseDate(cell, sheetYear);
-
-                      // Extract HW number
-                      const hwMatch = cell.match(/(?:homework|hw)\s*(\d+)/i);
-                      if (hwMatch) {
-                        title = `Homework ${hwMatch[1]}`;
-                      } else {
-                        title = "Homework";
-                      }
-
-                      // If no explicit date, use row date
-                      if (!dueDate && rowDate) {
-                        dueDate = rowDate;
-                      }
-                    } else if (/project/i.test(cell.toLowerCase())) {
-                      type = "Project";
-                      dueDate = parseDate(cell, sheetYear);
-
-                      // Extract project number
-                      const projectMatch = cell.match(/project\s*(\d+)/i);
-                      if (projectMatch) {
-                        title = `Project ${projectMatch[1]}`;
-                      } else {
-                        title = "Project";
-                      }
-
-                      // If no explicit date and we have a row date, projects typically due later
-                      if (!dueDate && rowDate) {
-                        const dueDateWithOffset = new Date(rowDate);
-                        dueDateWithOffset.setDate(
-                          dueDateWithOffset.getDate() + 14,
-                        ); // Two weeks is typical
-                        dueDate = dueDateWithOffset;
-                      }
-                    } else if (/midterm/i.test(cell.toLowerCase())) {
-                      type = "Midterm Exam";
-                      title = "Midterm Exam";
-                      dueDate = parseDate(cell, sheetYear) || rowDate;
-                    } else if (/final\s+exam/i.test(cell.toLowerCase())) {
-                      type = "Final Exam";
-                      title = "Final Exam";
-                      dueDate = parseDate(cell, sheetYear) || rowDate;
-                    } else if (/exam/i.test(cell.toLowerCase())) {
-                      type = "Exam";
-                      title = "Exam";
-                      dueDate = parseDate(cell, sheetYear) || rowDate;
-                    } else if (/quiz/i.test(cell.toLowerCase())) {
-                      type = "Quiz";
-                      dueDate = parseDate(cell, sheetYear) || rowDate;
-
-                      const quizMatch = cell.match(/quiz\s*(\d+)/i);
-                      if (quizMatch) {
-                        title = `Quiz ${quizMatch[1]}`;
-                      } else {
-                        title = "Quiz";
-                      }
-                    } else {
-                      // General assignment
-                      dueDate = parseDate(cell, sheetYear);
-
-                      // Try to extract date with "due by" pattern if parseDate failed
-                      if (!dueDate) {
-                        const dueDateMatch = cell.match(
-                          /due\s+by\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i,
-                        );
-                        if (dueDateMatch) {
-                          const month = parseInt(dueDateMatch[1]);
-                          const day = parseInt(dueDateMatch[2]);
-                          let year = dueDateMatch[3]
-                            ? parseInt(dueDateMatch[3])
-                            : sheetYear || new Date().getFullYear();
-
-                          // Handle 2-digit years
-                          if (year < 100) {
-                            year = year < 50 ? 2000 + year : 1900 + year;
-                          }
-
-                          dueDate = new Date(year, month - 1, day);
-
-                          // Clean up title by removing the due date part
-                          title = cell
-                            .replace(
-                              /due\s+by\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?/i,
-                              "",
-                            )
-                            .trim();
-                        }
-                      }
-
-                      // Still no date? Use row date if available
-                      if (!dueDate && rowDate) {
-                        dueDate = rowDate;
-                      }
-                    }
-
-                    // Skip if no valid date, or if date is in the past
-                    if (!dueDate || isDateInPast(dueDate)) {
-                      continue;
-                    }
-
-                    // Format date properly using DateUtils
-                    const formattedDate = formatDate(dueDate);
-
-                    // Create a unique ID to prevent duplicates
-                    const assignmentId = `${title.trim()}-${type}-${formattedDate}`;
-
-                    if (!processedAssignments.has(assignmentId)) {
-                      processedAssignments.add(assignmentId);
-
-                      // Add to results
-                      assignmentData.push({
-                        title: title.trim(),
-                        dueDate: formattedDate,
-                        course: courseName,
-                        description: description || "",
-                        type: type,
-                        fileName: file.name,
-                      });
-                    }
-                  }
-                }
-              }
-            }
-
-            // Add all assignments from this file
-            results.push(...assignmentData);
+            const excelAssignments = await processExcelFile(file);
+            allAssignments.push(...excelAssignments);
           } else if (fileType === "csv") {
-            assignmentData = await processCSVFile(file);
-            results.push(...assignmentData);
+            const csvAssignments = await processCSVFile(file);
+            allAssignments.push(...csvAssignments);
+          } else {
+            console.warn(`Unsupported file type: ${fileType}`);
           }
         } catch (fileError) {
           console.error(`Error processing ${file.name}:`, fileError);
-          setError(`Error processing ${file.name}: ${fileError.message}`);
+          setError((prev) =>
+            prev
+              ? `${prev}\n${file.name}: ${fileError.message}`
+              : `Error processing ${file.name}: ${fileError.message}`,
+          );
         }
       }
 
-      // Sort assignments by due date
-      results.sort((a, b) => {
-        const dateA = new Date(a.dueDate);
-        const dateB = new Date(b.dueDate);
-        return dateA - dateB;
-      });
+      // Remove duplicates and sort by date
+      const uniqueAssignments = removeDuplicateAssignments(allAssignments);
+      uniqueAssignments.sort(
+        (a, b) => new Date(a.dueDate) - new Date(b.dueDate),
+      );
 
-      // Remove duplicates based on title, type, and due date
-      const uniqueResults = [];
-      const seen = new Set();
-
-      for (const item of results) {
-        const key = `${item.title}-${item.type}-${item.dueDate}-${item.course}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          uniqueResults.push(item);
-        }
-      }
-
-      console.log(`Found ${uniqueResults.length} unique assignments`);
-      setExtractedData(uniqueResults);
+      setExtractedData(uniqueAssignments);
     } catch (err) {
       console.error("Error processing files:", err);
       setError(`Failed to process files: ${err.message}`);
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  // Remove duplicate assignments
+  const removeDuplicateAssignments = (assignments) => {
+    const uniqueAssignments = [];
+    const seen = new Set();
+
+    for (const assignment of assignments) {
+      const key = `${assignment.title}-${assignment.dueDate}-${assignment.course}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueAssignments.push(assignment);
+      }
+    }
+
+    return uniqueAssignments;
   };
 
   return (
@@ -737,7 +772,7 @@ const SyllabusSyncApp = () => {
             />
           </section>
 
-          {showPowerPlannerExport && (
+          {showPowerPlannerOptions && (
             <section className="bg-white dark:bg-gray-800 shadow-md rounded-lg overflow-hidden p-6 border border-gray-200 dark:border-gray-700">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
                 Power Planner Export Options
@@ -755,7 +790,7 @@ const SyllabusSyncApp = () => {
                   type="text"
                   value={courseOverride}
                   onChange={(e) => setCourseOverride(e.target.value)}
-                  placeholder="e.g. CMP 158"
+                  placeholder="e.g. CMP 168"
                   className="w-full sm:w-64 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
                 />
                 <p className="mt-1 text-xs text-gray-500">
@@ -765,14 +800,14 @@ const SyllabusSyncApp = () => {
 
               <div className="flex space-x-4">
                 <button
-                  onClick={handlePowerPlannerExport}
+                  onClick={exportToPowerPlanner}
                   className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md shadow-sm text-sm font-medium focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
                 >
                   Export to Power Planner
                 </button>
 
                 <button
-                  onClick={() => setShowPowerPlannerExport(false)}
+                  onClick={() => setShowPowerPlannerOptions(false)}
                   className="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-md shadow-sm text-sm font-medium focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
                 >
                   Cancel
@@ -801,16 +836,14 @@ const SyllabusSyncApp = () => {
           How to use this tool
         </h2>
         <ol className="space-y-3 text-gray-700 dark:text-gray-300 list-decimal pl-5">
-          <li>
-            Upload your syllabus or assignment files (Excel, CSV, PDF, or Word)
-          </li>
-          <li>Click &quot;Extract Assignments&quot; to process the files</li>
+          <li>Upload your syllabus or assignment files (Excel or CSV)</li>
+          <li>Click "Extract Assignments" to process the files</li>
           <li>Review the extracted assignments in the table</li>
           <li>
             Choose your preferred export format (Power Planner, Calendar, or
             CSV)
           </li>
-          <li>Click &quot;Export Data&quot; to download the file</li>
+          <li>Click "Export Data" to download the file</li>
           <li>Import the exported file into your planning tool of choice</li>
         </ol>
       </section>
@@ -823,6 +856,4 @@ const SyllabusSyncApp = () => {
       </footer>
     </div>
   );
-};
-
-export default SyllabusSyncApp;
+}

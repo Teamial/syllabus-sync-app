@@ -8,7 +8,7 @@ const FileUploader = ({ onFilesUploaded, files, onRemoveFile }) => {
     (acceptedFiles) => {
       onFilesUploaded(acceptedFiles);
     },
-    [onFilesUploaded]
+    [onFilesUploaded],
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -19,10 +19,6 @@ const FileUploader = ({ onFilesUploaded, files, onRemoveFile }) => {
       ],
       "application/vnd.ms-excel": [".xls"],
       "text/csv": [".csv"],
-      "application/pdf": [".pdf"],
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        [".docx"],
-      "application/msword": [".doc"],
     },
   });
 
@@ -61,7 +57,7 @@ const FileUploader = ({ onFilesUploaded, files, onRemoveFile }) => {
                 Drag & drop files here, or click to select files
               </p>
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Supports Excel, CSV, PDF, and Word documents
+                Supports Excel (.xlsx, .xls) and CSV formats
               </p>
             </div>
           )}
