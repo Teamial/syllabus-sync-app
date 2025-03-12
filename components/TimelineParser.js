@@ -1,5 +1,28 @@
 import { parseDate, formatDate, isDateInPast } from "./DateUtils";
 
+// Add this function at the top of your TimelineParser.js file
+function parseFilePath(filePath) {
+  // Extract filename from path
+  const fileName = filePath.split("/").pop().split("\\").pop();
+
+  // Extract extension
+  const extIndex = fileName.lastIndexOf(".");
+  const ext = extIndex > -1 ? fileName.slice(extIndex + 1) : "";
+
+  // Extract name without extension
+  const name = extIndex > -1 ? fileName.slice(0, extIndex) : fileName;
+
+  // Extract directory
+  const dir = filePath.substring(0, filePath.length - fileName.length) || "./";
+
+  return {
+    base: fileName,
+    name: name,
+    ext: ext ? `.${ext}` : "",
+    dir: dir,
+  };
+}
+
 /**
  * Parse P&C Activity due dates using multiple strategies
  */
@@ -56,10 +79,32 @@ export function parseHomeworkDueDate(cellText, rowDate, sheetYear) {
     return new Date(year, month - 1, day);
   }
 
+  const simpleDateMatch = cellText.match(
+    /(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/,
+  );
+  if (simpleDateMatch) {
+    const month = parseInt(simpleDateMatch[1]);
+    const day = parseInt(simpleDateMatch[2]);
+    let year = simpleDateMatch[3] ? parseInt(simpleDateMatch[3]) : sheetYear;
+
+    // Handle 2-digit years
+    if (year < 100) {
+      year = year < 50 ? 2000 + year : 1900 + year;
+    }
+
+    return new Date(year, month - 1, day);
+  }
+
+  const currentDate = new Date();
+
+  if (rowDate && rowDate <= currentDate) {
+    return currentDate;
+  }
+
   // If we have a row date, homework assignments are typically due within two weeks
   if (rowDate) {
     const dueDate = new Date(rowDate);
-    dueDate.setDate(dueDate.getDate() + 14); // Two weeks after class
+    dueDate.setDate(dueDate.getDate() + 7); // One week after class
     return dueDate;
   }
 
@@ -127,11 +172,13 @@ export function parseProjectDueDate(cellText, rowDate, sheetYear) {
   }
 
   // Format 1: Date in MM/DD/YYYY format
-  const dateMatch = cellText.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  const dateMatch = cellText.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
   if (dateMatch) {
     const month = parseInt(dateMatch[1]);
     const day = parseInt(dateMatch[2]);
-    const year = parseInt(dateMatch[3]);
+    const year = parseInt(
+      dateMatch[3] ? parseFilePath(dateMatch[3]) : sheetYear,
+    );
     return new Date(year, month - 1, day);
   }
 
@@ -157,6 +204,10 @@ export function parseProjectDueDate(cellText, rowDate, sheetYear) {
     const dueDate = new Date(rowDate);
     dueDate.setDate(dueDate.getDate() + 21); // 3 weeks after row date
     return dueDate;
+  }
+
+  if (rowDate) {
+    return new Date(rowDate);
   }
 
   return null;

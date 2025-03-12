@@ -81,6 +81,15 @@ export function isDateInPast(date) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
+  // consider these assignments due today as not in the past
+  if (
+    dateObj.getDate() === today.getDate() &&
+    dateObj.getMonth() === today.getMonth() &&
+    dateObj.getFullYear() === today.getFullYear()
+  ) {
+    return false;
+  }
+
   return dateObj < today;
 }
 
