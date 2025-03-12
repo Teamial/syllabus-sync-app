@@ -12,6 +12,7 @@ import {
 } from "./DateUtils";
 import { parseTimelineSheet, detectTimelineFormat } from "./TimelineParser";
 import HelpSection from "./HelpSection";
+import { parseCMP168Timeline } from './CMP168Parser';
 
 // Ultra-reliable function to detect workbook objects
 function isWorkbookObject(obj) {
@@ -604,195 +605,410 @@ export default function SyllabusSyncApp() {
     setFiles((prevFiles) => prevFiles.filter((_, i) => i !== index));
   }, []);
 
-  // Extract course code from filename
-  const extractCourseCode = (fileName) => {
-    // Regular expression to match common course code patterns (e.g., CS101, MATH 240)
-    const courseMatch = fileName.match(/([A-Z]{2,4})\s*(\d{3,4})/i);
-    if (courseMatch) {
-      return `${courseMatch[1]} ${courseMatch[2]}`;
-    }
-
-    // If no match, return just the filename without extension
-    return fileName.split(".")[0];
-  };
+  // Use the extractCourseCode function defined later in the file
 
   // Process Excel files
-  // Enhanced function to detect timeline format
+// Improved Excel processing function for SyllabusSyncApp.js
 
-  // Modify the processExcelFile function to check for timeline format
-  // Replace the processExcelFile function in SyllabusSyncApp.js
-  const processExcelFile = async (file) => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
+// Improved Excel processing function for SyllabusSyncApp.js
 
-      reader.onload = (e) => {
-        try {
-          const data = new Uint8Array(e.target.result);
+const processExcelFile = async (file) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
 
-          // Read the Excel file
-          const workbook = XLSX.read(data, {
-            type: "array",
-            cellDates: true,
-            cellStyles: true,
-          });
+    reader.onload = (e) => {
+      try {
+        console.log(`Processing Excel file: ${file.name}`);
+        const data = new Uint8Array(e.target.result);
 
-          // Extract course name from filename
-          const courseName = extractCourseCode(file.name);
-          const currentYear = new Date().getFullYear();
+        // Read the Excel file with all options enabled for better parsing
+        const workbook = XLSX.read(data, {
+          type: "array",
+          cellDates: true,  // Ensure dates are parsed as Date objects
+          cellStyles: true, // Keep cell styles for better formatting detection
+          cellFormula: true, // Parse formulas
+          dateNF: 'yyyy-mm-dd', // Date format
+          cellNF: true, // Keep number formats
+        });
 
-          // Process assignments from all sheets
-          const assignments = [];
-          const isTimeline = detectTimelineFormat(workbook);
-          console.log(`File ${file.name} detected as timeline format: ${isTimeline}`);
+        console.log(`File loaded, found ${workbook.SheetNames.length} sheets`);
 
-          // Process each sheet - but don't add the workbook itself to the assignments array!
-          for (const sheetName of workbook.SheetNames) {
-            try {
-              // Skip sheets that look like they contain metadata/info
-              if (/info|metadata|readme|about/i.test(sheetName)) continue;
-
-              const sheet = workbook.Sheets[sheetName];
-
-              // Create a safe JSON representation of the sheet
-              const jsonData = XLSX.utils.sheet_to_json(sheet);
-
-              // Skip empty sheets
-              if (!jsonData || jsonData.length === 0) continue;
-
-              console.log(`Processing sheet ${sheetName} with ${jsonData.length} rows`);
-
-              // Process the sheet based on format
-              if (isTimeline) {
-                try {
-                  // Process as timeline format - note that we pass only the processed sheet data,
-                  // not the entire workbook
-                  const timelineAssignments = parseTimelineSheet(
-                    jsonData,
-                    courseName,
-                    currentYear,
-                  );
-
-                  console.log(`Found ${timelineAssignments.length} timeline assignments in ${sheetName}`);
-
-                  if (
-                    Array.isArray(timelineAssignments) &&
-                    timelineAssignments.length > 0
-                  ) {
-                    // Create clean assignment objects without any workbook references
-                    const cleanAssignments = timelineAssignments.map(
-                      (item) => ({
-                        title: String(item.title || ""),
-                        dueDate: String(item.dueDate || ""),
-                        course: String(item.course || ""),
-                        description: String(item.description || ""),
-                        type: String(item.type || "Assignment"),
-                        fileName: String(file.name),
-                      }),
-                    );
-
-                    assignments.push(...cleanAssignments);
-                  }
-                } catch (timelineError) {
-                  console.warn(
-                    `Error processing timeline sheet ${sheetName}:`,
-                    timelineError,
-                  );
-                  // Continue to next sheet
-                }
-              } else {
-                // Process as regular format - extract assignments from standard table format
-                try {
-                  for (const row of jsonData) {
-                    // Skip empty rows
-                    if (!row || Object.keys(row).length === 0) continue;
-
-                    // Find due date in various column names
-                    const dueDate = findValueFromVariants(row, [
-                      "Due Date",
-                      "Due",
-                      "Deadline",
-                      "Date",
-                    ]);
-
-                    // Skip if no due date
-                    if (!dueDate) continue;
-
-                    // Parse the date
-                    const parsedDate = parseDate(dueDate, currentYear);
-
-                    // Skip invalid dates or dates in the past
-                    if (!parsedDate || isDateInPast(parsedDate)) continue;
-
-                    // Format the date
-                    const formattedDate = formatDate(parsedDate);
-
-                    // Get title from various column names
-                    const title =
-                      findValueFromVariants(row, [
-                        "Title",
-                        "Assignment",
-                        "Task",
-                        "Name",
-                        "Description",
-                      ]) || "Unnamed Assignment";
-
-                    // Get description from various column names
-                    const description =
-                      findValueFromVariants(row, [
-                        "Description",
-                        "Details",
-                        "Notes",
-                      ]) || "";
-
-                    // Get type from various column names
-                    const type =
-                      findValueFromVariants(row, ["Type", "Category"]) ||
-                      "Assignment";
-
-                    // Create a clean assignment object
-                    assignments.push({
-                      title: String(title),
-                      dueDate: String(formattedDate),
-                      course: String(
-                        findValueFromVariants(row, ["Course", "Class"]) ||
-                          courseName,
-                      ),
-                      description: String(description),
-                      type: String(type),
-                      fileName: String(file.name),
-                    });
-                  }
-                } catch (standardError) {
-                  console.warn(
-                    `Error processing standard sheet ${sheetName}:`,
-                    standardError,
-                  );
-                  // Continue to next sheet
-                }
-              }
-            } catch (sheetError) {
-              console.warn(`Error processing sheet ${sheetName}:`, sheetError);
-              // Continue to next sheet
-            }
+        // Special handling for CMP168_Timeline.xlsx
+        if (file.name.includes("CMP168_Timeline")) {
+          console.log("Detected CMP168_Timeline file, using specialized parser");
+          const cmp168Assignments = parseCMP168Timeline(workbook);
+          
+          if (cmp168Assignments.length > 0) {
+            console.log(`Successfully extracted ${cmp168Assignments.length} assignments from CMP168 timeline`);
+            
+            // Add filename to each assignment
+            const assignmentsWithFilename = cmp168Assignments.map(item => ({
+              ...item,
+              fileName: file.name
+            }));
+            
+            resolve(assignmentsWithFilename);
+            return;
+          } else {
+            console.warn("CMP168 specialized parser found no assignments, falling back to standard processing");
           }
-
-          console.log(`Total assignments found in ${file.name}: ${assignments.length}`);
-          resolve(assignments);
-        } catch (error) {
-          console.error("Error processing Excel data:", error);
-          reject(new Error(`Failed to process Excel file: ${error.message}`));
         }
-      };
 
-      reader.onerror = (error) => {
-        reject(
-          new Error(`FileReader error: ${error.message || "Unknown error"}`),
-        );
-      };
+        // If we're here, either it's not CMP168 or the specialized parser found no assignments
+        // Extract course name from filename
+        const courseName = extractCourseCode(file.name);
+        const currentYear = new Date().getFullYear();
 
-      reader.readAsArrayBuffer(file);
-    });
-  };
+        // Process assignments from all sheets
+        const assignments = [];
+        
+        // Process each sheet
+        for (const sheetName of workbook.SheetNames) {
+          try {
+            // Skip sheets that look like they contain metadata/info
+            if (/info|metadata|readme|about/i.test(sheetName)) {
+              console.log(`Skipping metadata sheet: ${sheetName}`);
+              continue;
+            }
+
+            const sheet = workbook.Sheets[sheetName];
+
+            // Create a safe JSON representation of the sheet
+            const jsonData = XLSX.utils.sheet_to_json(sheet);
+
+            // Skip empty sheets
+            if (!jsonData || jsonData.length === 0) continue;
+
+            console.log(`Processing sheet ${sheetName} with ${jsonData.length} rows`);
+
+            // First try to detect if this is a timeline format
+            const isTimeline = detectTimelineFormat(jsonData);
+            
+            if (isTimeline) {
+              console.log(`Sheet ${sheetName} appears to be a timeline format`);
+              
+              // Process the sheet as a timeline format
+              const timelineAssignments = parseTimelineSheet(jsonData, courseName, currentYear);
+              
+              if (timelineAssignments && timelineAssignments.length > 0) {
+                console.log(`Found ${timelineAssignments.length} timeline assignments in ${sheetName}`);
+                
+                // Create clean assignment objects
+                const cleanAssignments = timelineAssignments.map(item => ({
+                  title: String(item.title || ""),
+                  dueDate: String(item.dueDate || ""),
+                  course: String(item.course || ""),
+                  description: String(item.description || ""),
+                  type: String(item.type || "Assignment"),
+                  fileName: String(file.name)
+                }));
+                
+                assignments.push(...cleanAssignments);
+              }
+            } else {
+              // Process as standard format
+              for (const row of jsonData) {
+                // Skip empty rows
+                if (!row || Object.keys(row).length === 0) continue;
+
+                // Find due date in various column names
+                const dueDate = findValueFromVariants(row, [
+                  "Due Date", "Due", "Deadline", "Date", "DUE DATE", "Due date", "due date",
+                  "Submission Date", "Submit By", "Due By"
+                ]);
+
+                // Skip if no due date
+                if (!dueDate) continue;
+
+                // Parse the date
+                const parsedDate = parseDate(dueDate, currentYear);
+
+                // Skip invalid dates or dates in the past
+                if (!parsedDate || isDateInPast(parsedDate)) continue;
+
+                // Format the date
+                const formattedDate = formatDate(parsedDate);
+
+                // Get title from various column names
+                const title = findValueFromVariants(row, [
+                  "Title", "Assignment", "Task", "Name", "Description", "Assignment Name",
+                  "Homework", "Project", "Activity"
+                ]) || "Unnamed Assignment";
+
+                // Get description from various column names
+                const description = findValueFromVariants(row, [
+                  "Description", "Details", "Notes", "Instructions", "Content"
+                ]) || "";
+
+                // Get type from various column names
+                const type = findValueFromVariants(row, [
+                  "Type", "Category", "Assignment Type", "Kind"
+                ]) || "Assignment";
+
+                // Create a clean assignment object
+                assignments.push({
+                  title: String(title),
+                  dueDate: String(formattedDate),
+                  course: String(findValueFromVariants(row, ["Course", "Class", "Subject"]) || courseName),
+                  description: String(description),
+                  type: String(type),
+                  fileName: String(file.name),
+                });
+              }
+            }
+          } catch (sheetError) {
+            console.warn(`Error processing sheet ${sheetName}:`, sheetError);
+            // Continue to next sheet
+          }
+        }
+
+        console.log(`Total assignments found in ${file.name}: ${assignments.length}`);
+        
+        if (assignments.length === 0) {
+          console.warn(`No assignments found in ${file.name}. This might indicate a format issue.`);
+        }
+        
+        resolve(assignments);
+      } catch (error) {
+        console.error("Error processing Excel data:", error);
+        reject(new Error(`Failed to process Excel file: ${error.message}`));
+      }
+    };
+
+    reader.onerror = (error) => {
+      reject(new Error(`FileReader error: ${error.message || "Unknown error"}`));
+    };
+
+    reader.readAsArrayBuffer(file);
+  });
+};
+
+// Helper function to detect timeline format
+function detectTimelineFormat(jsonData) {
+  if (!jsonData || jsonData.length === 0) return false;
+  
+  // Look at the first row to see if it has timeline-like columns
+  const firstRow = jsonData[0];
+  if (!firstRow) return false;
+  
+  const keys = Object.keys(firstRow);
+  
+  // Check if the keys contain common timeline columns
+  return keys.some(key => 
+    key.includes('Date') || 
+    key.includes('Week') || 
+    key.includes('Day') || 
+    key.includes('Session') ||
+    key.includes('Due By') ||
+    key.includes('Topic')
+  );
+}
+
+// Helper function to parse timeline sheets
+// function parseTimelineSheet(jsonData, courseName, currentYear) {
+//   const assignments = [];
+  
+//   // Process each row
+//   for (const row of jsonData) {
+//     // Skip if not a valid row
+//     if (!row || typeof row !== 'object') continue;
+    
+//     // Find a date in the row - try various date column patterns
+//     let dateValue = null;
+//     let dateColumn = null;
+    
+//     // Check various date column patterns
+//     for (const key of Object.keys(row)) {
+//       if (key.includes('Date') || key.includes('Due') || key.includes('Deadline')) {
+//         dateValue = row[key];
+//         dateColumn = key;
+//         break;
+//       }
+//     }
+    
+//     // If no specific date column found, check other columns for date-like values
+//     if (!dateValue) {
+//       for (const [key, value] of Object.entries(row)) {
+//         if (value && (typeof value === 'string' || typeof value === 'number')) {
+//           try {
+//             const possibleDate = parseDate(value, currentYear);
+//             if (possibleDate && !isNaN(possibleDate.getTime())) {
+//               dateValue = value;
+//               dateColumn = key;
+//               break;
+//             }
+//           } catch (e) {
+//             // Not a date, continue checking
+//           }
+//         }
+//       }
+//     }
+    
+//     // Skip row if no valid date found
+//     if (!dateValue) continue;
+    
+//     // Parse the date
+//     const rowDate = parseDate(dateValue, currentYear);
+    
+//     // Skip invalid dates or dates in the past
+//     if (!rowDate || isDateInPast(rowDate)) continue;
+    
+//     const formattedDate = formatDate(rowDate);
+    
+//     // Look for assignments in this row
+    
+//     // Check all columns for potential assignments
+//     for (const [key, value] of Object.entries(row)) {
+//       // Skip the date column we already processed
+//       if (key === dateColumn) continue;
+      
+//       // Skip if not a string or is empty
+//       if (!value || typeof value !== 'string' || value.trim() === '') continue;
+      
+//       const lowerValue = value.toLowerCase();
+//       const lowerKey = key.toLowerCase();
+      
+//       // Check for homework
+//       if (lowerKey.includes('homework') || lowerKey.includes('hw') || 
+//           lowerValue.includes('homework') || lowerValue.includes('hw')) {
+        
+//         let title = "Homework";
+//         // Try to extract homework number
+//         const hwMatch = lowerValue.match(/(?:homework|hw)\s*(?:#|\s)?(\d+)/i);
+//         if (hwMatch) {
+//           title = `Homework ${hwMatch[1]}`;
+//         }
+        
+//         assignments.push({
+//           title,
+//           dueDate: formattedDate,
+//           course: courseName,
+//           description: value,
+//           type: "Homework"
+//         });
+//       }
+//       // Check for projects
+//       else if (lowerKey.includes('project') || lowerValue.includes('project')) {
+//         let title = "Project";
+//         // Try to extract project number
+//         const projMatch = lowerValue.match(/project\s*(?:#|\s)?(\d+)/i);
+//         if (projMatch) {
+//           title = `Project ${projMatch[1]}`;
+//         }
+        
+//         assignments.push({
+//           title,
+//           dueDate: formattedDate,
+//           course: courseName,
+//           description: value,
+//           type: "Project"
+//         });
+//       }
+//       // Check for activities
+//       else if (lowerKey.includes('activity') || lowerValue.includes('activity') ||
+//                lowerKey.includes('p&c') || lowerValue.includes('p&c')) {
+        
+//         let title = "Activity";
+//         // Try to extract activity number
+//         const actMatch = lowerValue.match(/(?:activity|p&c)\s*(?:#|\s)?(\d+)/i);
+//         if (actMatch) {
+//           title = `Activity ${actMatch[1]}`;
+//         }
+        
+//         assignments.push({
+//           title,
+//           dueDate: formattedDate,
+//           course: courseName,
+//           description: value,
+//           type: "Activity"
+//         });
+//       }
+//       // Check for exams
+//       else if (lowerKey.includes('exam') || lowerValue.includes('exam') ||
+//                lowerKey.includes('test') || lowerValue.includes('test') ||
+//                lowerKey.includes('quiz') || lowerValue.includes('quiz')) {
+        
+//         let title = "Exam";
+//         let type = "Exam";
+        
+//         if (lowerValue.includes('midterm')) {
+//           title = "Midterm Exam";
+//         } else if (lowerValue.includes('final')) {
+//           title = "Final Exam";
+//         } else if (lowerValue.includes('quiz')) {
+//           title = "Quiz";
+//           type = "Quiz";
+//         }
+        
+//         assignments.push({
+//           title,
+//           dueDate: formattedDate,
+//           course: courseName,
+//           description: value,
+//           type
+//         });
+//       }
+//     }
+//   }
+  
+//   return assignments;
+// }
+
+// Utility function to find values from multiple possible column names
+// function findValueFromVariants(row, variants) {
+//   if (!row || typeof row !== 'object') return null;
+  
+//   for (const variant of variants) {
+//     // Check exact match
+//     if (row[variant] !== undefined && row[variant] !== null && row[variant] !== "") {
+//       return row[variant];
+//     }
+    
+//     // Also check case-insensitive variants
+//     const lowerVariant = variant.toLowerCase();
+//     for (const key in row) {
+//       if (key.toLowerCase() === lowerVariant && 
+//           row[key] !== undefined && row[key] !== null && row[key] !== "") {
+//         return row[key];
+//       }
+//     }
+//   }
+//   return null;
+// }
+
+// Extract course code from filename
+function extractCourseCode(fileName) {
+  // Regular expression to match common course code patterns (e.g., CS101, MATH 240)
+  const courseMatch = fileName.match(/([A-Z]{2,4})\s*(\d{3,4})/i);
+  if (courseMatch) {
+    return `${courseMatch[1]} ${courseMatch[2]}`;
+  }
+
+  // If no match, return just the filename without extension
+  return fileName.split(".")[0];
+}
+
+// Improved utility function to find values from multiple possible column names
+const findValueFromVariants = (row, variants) => {
+  if (!row || typeof row !== 'object') return null;
+  
+  for (const variant of variants) {
+    // Check exact match
+    if (row[variant] !== undefined && row[variant] !== null && row[variant] !== "") {
+      return row[variant];
+    }
+    
+    // Also check case-insensitive variants
+    const lowerVariant = variant.toLowerCase();
+    for (const key in row) {
+      if (key.toLowerCase() === lowerVariant && 
+          row[key] !== undefined && row[key] !== null && row[key] !== "") {
+        return row[key];
+      }
+    }
+  }
+  return null;
+};
 
   const isTimelineFormat = (sheet) => {
     // Check if the first few rows contain specific headers like in Image 2
@@ -1123,20 +1339,6 @@ export default function SyllabusSyncApp() {
         },
       });
     });
-  };
-
-  // Find value from multiple possible column names
-  const findValueFromVariants = (row, variants) => {
-    for (const variant of variants) {
-      if (
-        row[variant] !== undefined &&
-        row[variant] !== null &&
-        row[variant] !== ""
-      ) {
-        return row[variant];
-      }
-    }
-    return null;
   };
 
   // Export functions
