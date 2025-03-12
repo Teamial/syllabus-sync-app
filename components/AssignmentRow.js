@@ -13,7 +13,19 @@ const AssignmentRow = ({ assignment }) => {
   }
 
   // Detect XLSX workbook object and prevent rendering it
-  if (assignment.SheetNames || assignment.Sheets || assignment.Workbook) {
+  if (
+    assignment.SheetNames ||
+    assignment.Sheets ||
+    assignment.Workbook ||
+    assignment.Props ||
+    assignment.Deps ||
+    assignment.SSF ||
+    assignment.Strings ||
+    assignment.Styles ||
+    assignment.Themes ||
+    assignment.Directory ||
+    assignment.Custprops
+  ) {
     console.error(
       "XLSX workbook object passed to AssignmentRow, skipping render",
     );

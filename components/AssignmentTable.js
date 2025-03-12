@@ -3,6 +3,49 @@
 import React, { useState, useMemo } from "react";
 import AssignmentRow from "./AssignmentRow";
 
+// Ultra-reliable function to detect workbook objects
+function isWorkbookObject(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    return false;
+  }
+
+  // Check for specific workbook properties
+  const workbookProperties = [
+    "Directory",
+    "Workbook",
+    "Props",
+    "Custprops",
+    "Deps",
+    "Sheets",
+    "SheetNames",
+    "Strings",
+    "Styles",
+    "Themes",
+    "SSF",
+  ];
+
+  // If it has ANY of these properties, consider it a workbook
+  for (const prop of workbookProperties) {
+    if (prop in obj) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Create clean assignment objects without any risk of inherited properties
+function createCleanAssignment(item) {
+  return {
+    title: String(item.title || ""),
+    dueDate: String(item.dueDate || ""),
+    course: String(item.course || ""),
+    description: String(item.description || ""),
+    type: String(item.type || "Assignment"),
+    fileName: item.fileName ? String(item.fileName) : undefined,
+  };
+}
+
 const AssignmentTable = ({ assignments }) => {
   const [sortConfig, setSortConfig] = useState({
     key: "dueDate",
@@ -10,50 +53,60 @@ const AssignmentTable = ({ assignments }) => {
   });
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Filter out invalid assignments and workbook objects immediately
+  // Ultra-strict filtering and sanitization
   const safeAssignments = useMemo(() => {
-    if (!assignments) return [];
+    // Immediate null/undefined check
+    if (!assignments) {
+      console.warn("AssignmentTable received null/undefined assignments");
+      return [];
+    }
+
+    // Array check
     if (!Array.isArray(assignments)) {
       console.error(
         "AssignmentTable received non-array assignments:",
+        typeof assignments,
         assignments,
       );
       return [];
     }
 
-    return assignments.filter((item) => {
-      // Check if item is a valid assignment object
+    // Log diagnostic info
+    console.log(`AssignmentTable received ${assignments.length} items`);
+
+    // First level: Filter out non-objects, arrays, and workbook objects
+    const firstPass = assignments.filter((item) => {
+      // Check for valid object
       if (!item || typeof item !== "object" || Array.isArray(item)) {
-        console.warn("Filtered out non-object assignment:", item);
         return false;
       }
 
-      // Check for workbook object properties
-      if (
-        item.SheetNames ||
-        item.Sheets ||
-        item.Workbook ||
-        item.Props ||
-        item.Deps
-      ) {
+      // Check for workbook properties
+      if (isWorkbookObject(item)) {
         console.warn("Filtered out workbook object from assignments");
         return false;
       }
 
-      // Ensure item has the minimum required properties
+      // Required fields check
       if (!item.title || !item.dueDate) {
-        console.warn("Filtered out incomplete assignment:", item);
+        console.warn("Filtered out assignment missing required fields");
         return false;
       }
 
       return true;
     });
+
+    console.log(`After first pass filtering: ${firstPass.length} items remain`);
+
+    // Second level: Create completely new objects with only the properties we need
+    return firstPass.map(createCleanAssignment);
   }, [assignments]);
 
   // Apply sorting and filtering
   const sortedAssignments = useMemo(() => {
     if (!safeAssignments || safeAssignments.length === 0) return [];
 
+    // Work with a copy to avoid any reference issues
     let sortableItems = [...safeAssignments];
 
     // Filter items if search term exists
@@ -113,6 +166,17 @@ const AssignmentTable = ({ assignments }) => {
 
     return sortableItems;
   }, [safeAssignments, sortConfig, searchTerm]);
+
+  // Final safety check before rendering
+  const finalSafeData = useMemo(() => {
+    const data = sortedAssignments.filter((item) => !isWorkbookObject(item));
+    if (data.length !== sortedAssignments.length) {
+      console.error(
+        `EMERGENCY: Filtered out ${sortedAssignments.length - data.length} workbook objects just before render!`,
+      );
+    }
+    return data;
+  }, [sortedAssignments]);
 
   const requestSort = (key) => {
     setSortConfig((prevConfig) => {
@@ -180,7 +244,7 @@ const AssignmentTable = ({ assignments }) => {
     );
   };
 
-  if (!safeAssignments || safeAssignments.length === 0) {
+  if (!finalSafeData || finalSafeData.length === 0) {
     return (
       <div className="text-center py-8">
         <p className="text-gray-500 dark:text-gray-400">
@@ -196,7 +260,7 @@ const AssignmentTable = ({ assignments }) => {
         <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">
           Extracted Assignments
           <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">
-            ({sortedAssignments.length} items)
+            ({finalSafeData.length} items)
           </span>
         </h3>
 
@@ -272,19 +336,22 @@ const AssignmentTable = ({ assignments }) => {
             </tr>
           </thead>
           <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
-            {sortedAssignments.map((item, index) => {
-              // Final safety check before rendering
-              if (
-                !item ||
-                typeof item !== "object" ||
-                item.SheetNames ||
-                item.Sheets
-              ) {
-                console.error("Invalid item detected in render loop:", item);
-                return null;
-              }
+            {finalSafeData.map((item, index) => {
+              // Create a fresh copy of the assignment with only the properties we need
+              // This prevents any potential prototype-level issues
+              const safeItem = {
+                title: String(item.title || ""),
+                dueDate: String(item.dueDate || ""),
+                course: String(item.course || ""),
+                description: String(item.description || ""),
+                type: String(item.type || "Assignment"),
+              };
+
               return (
-                <AssignmentRow key={`assignment-${index}`} assignment={item} />
+                <AssignmentRow
+                  key={`assignment-${index}`}
+                  assignment={safeItem}
+                />
               );
             })}
           </tbody>

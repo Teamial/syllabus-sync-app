@@ -13,6 +13,98 @@ import {
 import { parseTimelineSheet, detectTimelineFormat } from "./TimelineParser";
 import HelpSection from "./HelpSection";
 
+// Ultra-reliable function to detect workbook objects
+function isWorkbookObject(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    return false;
+  }
+
+  // Check for specific workbook properties
+  const workbookProperties = [
+    "Directory",
+    "Workbook",
+    "Props",
+    "Custprops",
+    "Deps",
+    "Sheets",
+    "SheetNames",
+    "Strings",
+    "Styles",
+    "Themes",
+    "SSF",
+  ];
+
+  // If it has ANY of these properties, consider it a workbook
+  for (const prop of workbookProperties) {
+    if (prop in obj) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Ultra-reliable sanitizer function that creates brand new clean objects
+function sanitizeAssignmentData(assignments) {
+  if (!Array.isArray(assignments)) {
+    console.warn("sanitizeAssignmentData received non-array:", assignments);
+    return [];
+  }
+
+  console.log(`Sanitizing ${assignments.length} assignments`);
+
+  // First, filter out anything that's not an object or is a workbook
+  const filteredAssignments = assignments.filter((item) => {
+    // Basic type checking
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      console.warn("Filtered out invalid item type:", typeof item);
+      return false;
+    }
+
+    // Check for workbook properties
+    if (isWorkbookObject(item)) {
+      console.warn("Filtered out workbook object from assignments");
+      return false;
+    }
+
+    // Must have the minimum required fields
+    if (!item.title) {
+      console.warn("Assignment missing title:", item);
+      return false;
+    }
+
+    if (!item.dueDate) {
+      console.warn("Assignment missing dueDate:", item);
+      return false;
+    }
+
+    return true;
+  });
+
+  console.log(`After filtering: ${filteredAssignments.length} assignments remain`);
+
+  // Then, create brand new clean objects with only the properties we want
+  const cleanAssignments = filteredAssignments.map((item) => ({
+    title: String(item.title || ""),
+    dueDate: String(item.dueDate || ""),
+    course: String(item.course || ""),
+    description: String(item.description || ""),
+    type: String(item.type || "Assignment"),
+    fileName: item.fileName ? String(item.fileName) : undefined,
+  }));
+
+  return cleanAssignments;
+}
+
+// Helper to filter out workbook objects
+function filterOutWorkbooks(data) {
+  if (!Array.isArray(data)) return [];
+
+  return data.filter((item) => {
+    return !isWorkbookObject(item);
+  });
+}
+
 function validateAssignments(assignments) {
   // Filter out any non-object assignments or workbook objects
   return assignments.filter((assignment) => {
@@ -325,24 +417,109 @@ function downloadFile(content, filename, contentType) {
   }
 }
 
+// Add this near the top of SyllabusSyncApp.js
+// Enhanced debugging function to detect workbook objects anywhere in the data structure
 function debugFindWorkbooks(data, path = "") {
-  if (!data) return;
+  if (!data) return false;
+
+  // Check if this is a workbook object
+  if (
+    typeof data === "object" &&
+    !Array.isArray(data) &&
+    (data.SheetNames ||
+      data.Sheets ||
+      data.Workbook ||
+      data.Props ||
+      data.Deps ||
+      data.Directory ||
+      data.Custprops ||
+      data.Strings ||
+      data.Styles ||
+      data.Themes ||
+      data.SSF)
+  ) {
+    console.error(
+      `FOUND WORKBOOK at ${path}`,
+      Object.keys(data).reduce((acc, key) => {
+        acc[key] = `[${typeof data[key]}]`;
+        return acc;
+      }, {}),
+    );
+    return true;
+  }
+
+  let foundWorkbook = false;
 
   if (Array.isArray(data)) {
     data.forEach((item, index) => {
-      debugFindWorkbooks(item, `${path}[${index}]`);
+      if (debugFindWorkbooks(item, `${path}[${index}]`)) {
+        foundWorkbook = true;
+      }
     });
-  } else if (typeof data === "object") {
-    // Check for workbook properties
-    if (data.SheetNames || data.Sheets || data.Workbook) {
-      console.error(`FOUND WORKBOOK at ${path}:`, data);
-    }
-
+  } else if (typeof data === "object" && data !== null) {
     // Recursively check object properties
     Object.keys(data).forEach((key) => {
-      debugFindWorkbooks(data[key], `${path}.${key}`);
+      if (debugFindWorkbooks(data[key], `${path}.${key}`)) {
+        foundWorkbook = true;
+      }
     });
   }
+
+  return foundWorkbook;
+}
+
+// Add this function for inserting in the processing pipeline
+function deepSanitizeData(data) {
+  if (!Array.isArray(data)) {
+    return [];
+  }
+
+  // Define all workbook properties to check for
+  const workbookProps = [
+    "SheetNames",
+    "Sheets",
+    "Workbook",
+    "Props",
+    "Deps",
+    "Directory",
+    "Custprops",
+    "Strings",
+    "Styles",
+    "Themes",
+    "SSF",
+  ];
+
+  // First pass - deep filter to remove obvious workbook objects
+  let filteredData = data.filter((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return false;
+    }
+
+    for (const prop of workbookProps) {
+      if (item.hasOwnProperty(prop)) {
+        console.warn(`Found workbook property '${prop}', filtering out item`);
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  // Second pass - ensure all items have required properties
+  filteredData = filteredData.filter((item) => {
+    if (!item.title || !item.dueDate) {
+      console.warn("Item missing required properties", item);
+      return false;
+    }
+    return true;
+  });
+
+  // Log the results
+  console.log(
+    `Deep sanitize: ${filteredData.length} of ${data.length} passed verification`,
+  );
+
+  return filteredData;
 }
 
 export default function SyllabusSyncApp() {
@@ -366,16 +543,50 @@ export default function SyllabusSyncApp() {
   const safeSetExtractedData = (data) => {
     // Filter out any workbook objects before setting state
     if (Array.isArray(data)) {
+      // Define all possible workbook properties to check for
+      const workbookProps = [
+        "SheetNames",
+        "Sheets",
+        "Workbook",
+        "Props",
+        "Deps",
+        "Directory",
+        "Custprops",
+        "Strings",
+        "Styles",
+        "Themes",
+        "SSF",
+      ];
+
       const filteredData = data.filter((item) => {
-        if (!item || typeof item !== "object") return false;
-        // Filter out workbook objects
-        if (item.SheetNames || item.Sheets || item.Workbook) {
-          console.warn("Found workbook in data, filtering out", item);
+        // Basic type checking
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          console.warn("Filtered out invalid item type:", typeof item);
           return false;
         }
+
+        // Check for any workbook property
+        for (const prop of workbookProps) {
+          if (item.hasOwnProperty(prop)) {
+            console.warn(
+              `Found workbook property '${prop}' in data, filtering out item`,
+            );
+            return false;
+          }
+        }
+
+        // Verify required properties exist
+        if (!item.title || !item.dueDate) {
+          console.warn("Filtered out item missing required properties");
+          return false;
+        }
+
         return true;
       });
 
+      console.log(
+        `Filtered data: ${filteredData.length} of ${data.length} items passed validation`,
+      );
       setExtractedData(filteredData);
     } else {
       console.warn("Attempted to set non-array data:", data);
@@ -409,6 +620,7 @@ export default function SyllabusSyncApp() {
   // Enhanced function to detect timeline format
 
   // Modify the processExcelFile function to check for timeline format
+  // Replace the processExcelFile function in SyllabusSyncApp.js
   const processExcelFile = async (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -416,6 +628,8 @@ export default function SyllabusSyncApp() {
       reader.onload = (e) => {
         try {
           const data = new Uint8Array(e.target.result);
+
+          // Read the Excel file
           const workbook = XLSX.read(data, {
             type: "array",
             cellDates: true,
@@ -426,33 +640,143 @@ export default function SyllabusSyncApp() {
           const courseName = extractCourseCode(file.name);
           const currentYear = new Date().getFullYear();
 
-          // Check if this looks like a timeline format workbook
-          const isTimeline = detectTimelineFormat(workbook);
-
           // Process assignments from all sheets
           const assignments = [];
+          const isTimeline = detectTimelineFormat(workbook);
+          console.log(`File ${file.name} detected as timeline format: ${isTimeline}`);
 
+          // Process each sheet - but don't add the workbook itself to the assignments array!
           for (const sheetName of workbook.SheetNames) {
-            // Skip sheets that look like they contain metadata/info
-            if (/info|metadata|readme|about/i.test(sheetName)) continue;
+            try {
+              // Skip sheets that look like they contain metadata/info
+              if (/info|metadata|readme|about/i.test(sheetName)) continue;
 
-            const sheet = workbook.Sheets[sheetName];
+              const sheet = workbook.Sheets[sheetName];
 
-            if (isTimeline) {
-              // Use specialized timeline parser
-              const timelineAssignments = parseTimelineSheet(
-                sheet,
-                workbook,
-                courseName,
-                currentYear,
-              );
-              assignments.push(...timelineAssignments);
-            } else {
-              // Use the existing parser for other formats
-              const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+              // Create a safe JSON representation of the sheet
+              const jsonData = XLSX.utils.sheet_to_json(sheet);
+
+              // Skip empty sheets
+              if (!jsonData || jsonData.length === 0) continue;
+
+              console.log(`Processing sheet ${sheetName} with ${jsonData.length} rows`);
+
+              // Process the sheet based on format
+              if (isTimeline) {
+                try {
+                  // Process as timeline format - note that we pass only the processed sheet data,
+                  // not the entire workbook
+                  const timelineAssignments = parseTimelineSheet(
+                    jsonData,
+                    courseName,
+                    currentYear,
+                  );
+
+                  console.log(`Found ${timelineAssignments.length} timeline assignments in ${sheetName}`);
+
+                  if (
+                    Array.isArray(timelineAssignments) &&
+                    timelineAssignments.length > 0
+                  ) {
+                    // Create clean assignment objects without any workbook references
+                    const cleanAssignments = timelineAssignments.map(
+                      (item) => ({
+                        title: String(item.title || ""),
+                        dueDate: String(item.dueDate || ""),
+                        course: String(item.course || ""),
+                        description: String(item.description || ""),
+                        type: String(item.type || "Assignment"),
+                        fileName: String(file.name),
+                      }),
+                    );
+
+                    assignments.push(...cleanAssignments);
+                  }
+                } catch (timelineError) {
+                  console.warn(
+                    `Error processing timeline sheet ${sheetName}:`,
+                    timelineError,
+                  );
+                  // Continue to next sheet
+                }
+              } else {
+                // Process as regular format - extract assignments from standard table format
+                try {
+                  for (const row of jsonData) {
+                    // Skip empty rows
+                    if (!row || Object.keys(row).length === 0) continue;
+
+                    // Find due date in various column names
+                    const dueDate = findValueFromVariants(row, [
+                      "Due Date",
+                      "Due",
+                      "Deadline",
+                      "Date",
+                    ]);
+
+                    // Skip if no due date
+                    if (!dueDate) continue;
+
+                    // Parse the date
+                    const parsedDate = parseDate(dueDate, currentYear);
+
+                    // Skip invalid dates or dates in the past
+                    if (!parsedDate || isDateInPast(parsedDate)) continue;
+
+                    // Format the date
+                    const formattedDate = formatDate(parsedDate);
+
+                    // Get title from various column names
+                    const title =
+                      findValueFromVariants(row, [
+                        "Title",
+                        "Assignment",
+                        "Task",
+                        "Name",
+                        "Description",
+                      ]) || "Unnamed Assignment";
+
+                    // Get description from various column names
+                    const description =
+                      findValueFromVariants(row, [
+                        "Description",
+                        "Details",
+                        "Notes",
+                      ]) || "";
+
+                    // Get type from various column names
+                    const type =
+                      findValueFromVariants(row, ["Type", "Category"]) ||
+                      "Assignment";
+
+                    // Create a clean assignment object
+                    assignments.push({
+                      title: String(title),
+                      dueDate: String(formattedDate),
+                      course: String(
+                        findValueFromVariants(row, ["Course", "Class"]) ||
+                          courseName,
+                      ),
+                      description: String(description),
+                      type: String(type),
+                      fileName: String(file.name),
+                    });
+                  }
+                } catch (standardError) {
+                  console.warn(
+                    `Error processing standard sheet ${sheetName}:`,
+                    standardError,
+                  );
+                  // Continue to next sheet
+                }
+              }
+            } catch (sheetError) {
+              console.warn(`Error processing sheet ${sheetName}:`, sheetError);
+              // Continue to next sheet
             }
           }
 
+          console.log(`Total assignments found in ${file.name}: ${assignments.length}`);
           resolve(assignments);
         } catch (error) {
           console.error("Error processing Excel data:", error);
@@ -885,7 +1209,7 @@ export default function SyllabusSyncApp() {
         // Add event
         icsContent.push(
           "BEGIN:VEVENT",
-          `UID:${Math.random().toString(36).substring(2)}@syllabus-sync.app`,
+          `UID:${uniqueId}@syllabus-sync.app`,
           `DTSTAMP:${formatICSDate(new Date())}`,
           `DTSTART:${icsDate}`,
           `DTEND:${icsDate}`,
@@ -937,72 +1261,83 @@ export default function SyllabusSyncApp() {
   };
 
   // Process all uploaded files
-  // Replace your existing processFiles function with this one
-  // Updated processFiles function using safeSetExtractedData
+  // Process all uploaded files
   const processFiles = async () => {
-    if (!files || files.length === 0) return;
-
+    if (!files || files.length === 0) {
+      setError("Please upload files first");
+      return;
+    }
+  
     setIsProcessing(true);
     setError(null);
     setExtractedData([]); // Clear existing data
-
+  
     try {
       const allAssignments = [];
-
+      let processingErrors = [];
+  
       for (const file of files) {
         try {
           const fileType = file.name.split(".").pop().toLowerCase();
-
+  
+          let fileAssignments = [];
           if (fileType === "xlsx" || fileType === "xls") {
-            const excelAssignments = await processExcelFile(file);
-            if (Array.isArray(excelAssignments)) {
-              allAssignments.push(...excelAssignments);
-            }
+            fileAssignments = await processExcelFile(file);
           } else if (fileType === "csv") {
-            const csvAssignments = await processCSVFile(file);
-            if (Array.isArray(csvAssignments)) {
-              allAssignments.push(...csvAssignments);
-            }
+            fileAssignments = await processCSVFile(file);
           } else {
             console.warn(`Unsupported file type: ${fileType}`);
+            processingErrors.push(`${file.name}: Unsupported file type. Please upload Excel (.xlsx, .xls) or CSV files.`);
+            continue;
+          }
+  
+          // Validate and sanitize assignments immediately after processing each file
+          if (Array.isArray(fileAssignments) && fileAssignments.length > 0) {
+            console.log(`Found ${fileAssignments.length} raw assignments in ${file.name}`);
+            const cleanAssignments = sanitizeAssignmentData(fileAssignments);
+            console.log(`After sanitizing: ${cleanAssignments.length} valid assignments in ${file.name}`);
+            
+            if (cleanAssignments.length === 0) {
+              processingErrors.push(`${file.name}: Could not extract any valid assignments. Please check the file format.`);
+            } else {
+              allAssignments.push(...cleanAssignments);
+            }
+          } else {
+            processingErrors.push(`${file.name}: No assignments found. Please check if the file contains assignment data.`);
           }
         } catch (fileError) {
           console.error(`Error processing ${file.name}:`, fileError);
-          setError((prev) =>
-            prev
-              ? `${prev}\n${file.name}: ${fileError.message}`
-              : `Error processing ${file.name}: ${fileError.message}`,
-          );
+          processingErrors.push(`${file.name}: ${fileError.message}`);
         }
       }
-
-      console.log("All assignments before validation:", allAssignments.length);
-
-      // Add extra validation - filter out any workbook objects
-      const cleanedAssignments = allAssignments.filter((item) => {
-        if (!item || typeof item !== "object") return false;
-        // Filter out workbook objects
-        if (item.SheetNames || item.Sheets || item.Workbook) {
-          console.warn("Found workbook in data, filtering out");
-          return false;
+  
+      if (allAssignments.length === 0) {
+        if (processingErrors.length > 0) {
+          setError(`No valid assignments found in the uploaded files:\n${processingErrors.join('\n')}`);
+        } else {
+          setError("No valid assignments found in the uploaded files. Please check that your files contain assignment data with due dates.");
         }
-        return true;
-      });
-
-      console.log("Assignments after cleaning:", cleanedAssignments.length);
-
-      // Remove duplicates and sort by date
-      const uniqueAssignments = removeDuplicateAssignments(cleanedAssignments);
-      uniqueAssignments.sort(
-        (a, b) => new Date(a.dueDate) - new Date(b.dueDate),
-      );
-
-      // Use the safe setter instead of direct state update
-      safeSetExtractedData(uniqueAssignments);
+        setExtractedData([]);
+        return;
+      }
+  
+      console.log(`Found ${allAssignments.length} total valid assignments across all files`);
+  
+      // Final sanitization and deduplication
+      const uniqueAssignments = removeDuplicateAssignments(allAssignments);
+      uniqueAssignments.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  
+      console.log(`After deduplication: ${uniqueAssignments.length} unique assignments`);
+      setExtractedData(uniqueAssignments);
+      
+      // Show warnings if there were some processing errors but we still found assignments
+      if (processingErrors.length > 0) {
+        setError(`Warning: Some files had processing issues:\n${processingErrors.join('\n')}`);
+      }
     } catch (err) {
       console.error("Error processing files:", err);
       setError(`Failed to process files: ${err.message}`);
-      safeSetExtractedData([]); // Set empty array on error
+      setExtractedData([]);
     } finally {
       setIsProcessing(false);
     }
