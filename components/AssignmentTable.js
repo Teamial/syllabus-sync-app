@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
+import AssignmentRow from "./AssignmentRow";
 
 const AssignmentTable = ({ assignments }) => {
   const [sortConfig, setSortConfig] = useState({
@@ -230,38 +231,7 @@ const AssignmentTable = ({ assignments }) => {
           </thead>
           <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
             {sortedAssignments.map((item, index) => (
-              <tr
-                key={index}
-                className="hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-              >
-                <td className="px-4 py-3 whitespace-nowrap">
-                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                    {item.title}
-                  </div>
-                  {item.description && (
-                    <div className="text-xs text-gray-500 dark:text-gray-400 max-w-xs truncate mt-1">
-                      {item.description}
-                    </div>
-                  )}
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  <div className="text-sm text-gray-700 dark:text-gray-300">
-                    {item.dueDate instanceof Date
-                      ? `${item.dueDate.getMonth() + 1}/${item.dueDate.getDate()}/${item.dueDate.getFullYear()}`
-                      : item.dueDate}
-                  </div>
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  <div className="text-sm text-gray-700 dark:text-gray-300">
-                    {item.course}
-                  </div>
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap hidden md:table-cell">
-                  <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200">
-                    {item.type}
-                  </span>
-                </td>
-              </tr>
+              <AssignmentRow key={index} assignment={item} />
             ))}
           </tbody>
         </table>

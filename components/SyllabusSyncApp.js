@@ -5,6 +5,7 @@ import * as XLSX from "xlsx";
 import FileUploader from "./FileUploader";
 import AssignmentTable from "./AssignmentTable";
 import ExportOptions from "./ExportOptions";
+import PowerPlannerExport from "./PowerPlannerExport";
 import {
   parseDate,
   formatDate,
@@ -20,6 +21,8 @@ const SyllabusSyncApp = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [exportFormat, setExportFormat] = useState("powerplanner");
   const [error, setError] = useState(null);
+  const [showPowerPlannerExport, setShowPowerPlannerExport] = useState(false);
+  const [courseOverride, setCourseOverride] = useState("");
 
   // Create refs to avoid the circular dependencies in useCallback
   const extractedDataRef = useRef([]);
@@ -30,15 +33,6 @@ const SyllabusSyncApp = () => {
   }, [extractedData]);
 
   // Helper functions
-  const findValueByPossibleKeys = (obj, keys) => {
-    for (const key of keys) {
-      if (obj[key] !== undefined) {
-        return obj[key];
-      }
-    }
-    return null;
-  };
-
   const extractCourseName = (fileName) => {
     // Remove extension
     const nameWithoutExt = fileName.split(".")[0];
@@ -108,10 +102,10 @@ const SyllabusSyncApp = () => {
       // Format data according to Power Planner's CSV import format
       const powerPlannerFormat = data.map((item) => ({
         Name: item.title || "Unnamed Assignment",
-        Class: item.course || "Unknown Course",
+        Class: courseOverride || item.course || "Unknown Course",
         DueDate: formatDateForPowerPlanner(item.dueDate || ""),
         Details: item.description || "",
-        Type: item.type || "Assignment",
+        Type: mapAssignmentType(item.type) || "Assignment",
       }));
 
       // Convert to CSV
@@ -121,7 +115,30 @@ const SyllabusSyncApp = () => {
       console.error("Error exporting to Power Planner:", err);
       setError(`Failed to export to Power Planner: ${err.message}`);
     }
-  }, [downloadFile, formatDateForPowerPlanner]);
+  }, [downloadFile, formatDateForPowerPlanner, courseOverride]);
+
+  // Map assignment types to Power Planner compatible types
+  const mapAssignmentType = (type) => {
+    if (!type) return "Assignment";
+
+    // Power Planner supports these assignment types
+    const typeMap = {
+      Homework: "Homework",
+      HW: "Homework",
+      "P&C Activity": "Activity",
+      "PC Activity": "Activity",
+      Project: "Project",
+      Exam: "Exam",
+      Midterm: "Exam",
+      "Midterm Exam": "Exam",
+      Final: "Exam",
+      "Final Exam": "Exam",
+      Quiz: "Quiz",
+      Test: "Test",
+    };
+
+    return typeMap[type] || type;
+  };
 
   const exportToCSV = useCallback(() => {
     try {
@@ -201,7 +218,7 @@ const SyllabusSyncApp = () => {
 
     try {
       if (exportFormat === "powerplanner") {
-        exportToPowerPlanner();
+        setShowPowerPlannerExport(true);
       } else if (exportFormat === "ics") {
         exportToICS();
       } else if (exportFormat === "csv") {
@@ -211,135 +228,7 @@ const SyllabusSyncApp = () => {
       console.error("Export error:", err);
       setError(`Failed to export data: ${err.message}`);
     }
-  }, [exportFormat, exportToPowerPlanner, exportToICS, exportToCSV]);
-
-  // Helper function to format dates consistently
-  const formatDateSimple = (date) => {
-    return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
-  };
-
-  // Helper function to extract due date information from cell text
-  const extractDueDateInfo = (text, rowDate, today) => {
-    if (!text) return null;
-
-    const textLower = text.toLowerCase();
-    let type = "Assignment";
-    let title = text;
-    let description = "";
-    let date = null;
-
-    // Check for explicit due dates with "due by MM/DD" format
-    const explicitDateMatch = text.match(
-      /due\s+by\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i,
-    );
-
-    if (explicitDateMatch) {
-      const month = parseInt(explicitDateMatch[1]);
-      const day = parseInt(explicitDateMatch[2]);
-      let year = explicitDateMatch[3]
-        ? parseInt(explicitDateMatch[3])
-        : today.getFullYear();
-
-      // Handle 2-digit years
-      if (year < 100) {
-        year = year < 50 ? 2000 + year : 1900 + year;
-      }
-
-      date = new Date(year, month - 1, day);
-
-      // Remove due date pattern from title
-      title = text
-        .replace(/due\s+by\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?/i, "")
-        .trim();
-    }
-    // Check for simple date patterns like "MM/DD" without explicit "due by"
-    else {
-      const simpleDateMatch = text.match(
-        /(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/,
-      );
-
-      if (simpleDateMatch) {
-        const month = parseInt(simpleDateMatch[1]);
-        const day = parseInt(simpleDateMatch[2]);
-        let year = simpleDateMatch[3]
-          ? parseInt(simpleDateMatch[3])
-          : today.getFullYear();
-
-        if (year < 100) {
-          year = year < 50 ? 2000 + year : 1900 + year;
-        }
-
-        date = new Date(year, month - 1, day);
-
-        // If simple date is found but no assignment indicator, it might not be an assignment
-        if (
-          !/hw|homework|p&c|project|exam|midterm|final|quiz/i.test(textLower)
-        ) {
-          return null;
-        }
-      }
-      // If no date pattern is found but we have row date
-      else if (rowDate) {
-        date = new Date(rowDate);
-      } else {
-        // No date information available
-        return null;
-      }
-    }
-
-    // Determine assignment type based on text content
-    if (/\bp&c\b/i.test(textLower)) {
-      type = "P&C Activity";
-      if (!/activity/i.test(title)) {
-        title = `P&C Activity ${title.replace(/p&c/i, "").trim()}`;
-      }
-    } else if (/\bhw\b|\bhomework\b/i.test(textLower)) {
-      type = "Homework";
-      if (!/homework/i.test(title)) {
-        const hwMatch = title.match(/hw\s*(\d+)/i);
-        if (hwMatch) {
-          title = `Homework ${hwMatch[1]}`;
-        } else {
-          title = title.replace(/hw/i, "Homework").trim();
-        }
-      }
-    } else if (/project/i.test(textLower)) {
-      type = "Project";
-      const projectNumMatch = text.match(/project\s*(\d+)/i);
-      if (projectNumMatch) {
-        title = `Project ${projectNumMatch[1]}`;
-        description = text;
-      }
-    } else if (/midterm/i.test(textLower)) {
-      type = "Midterm Exam";
-      title = "Midterm Exam";
-      description = text;
-    } else if (/final\s+exam/i.test(textLower)) {
-      type = "Final Exam";
-      title = "Final Exam";
-      description = text;
-    } else if (/exam/i.test(textLower)) {
-      type = "Exam";
-      title = "Exam";
-      description = text;
-    } else if (/quiz/i.test(textLower)) {
-      type = "Quiz";
-      const quizNumMatch = text.match(/quiz\s*(\d+)/i);
-      if (quizNumMatch) {
-        title = `Quiz ${quizNumMatch[1]}`;
-      } else {
-        title = "Quiz";
-      }
-      description = text;
-    }
-
-    return {
-      title,
-      type,
-      date,
-      description,
-    };
-  };
+  }, [exportFormat, exportToICS, exportToCSV]);
 
   const processCSVFile = useCallback((file) => {
     return new Promise((resolve, reject) => {
@@ -433,6 +322,11 @@ const SyllabusSyncApp = () => {
   const handleRemoveFile = useCallback((index) => {
     setFiles((prevFiles) => prevFiles.filter((_, i) => i !== index));
   }, []);
+
+  const handlePowerPlannerExport = useCallback(() => {
+    exportToPowerPlanner();
+    setShowPowerPlannerExport(false);
+  }, [exportToPowerPlanner]);
 
   const processFiles = async () => {
     if (!files || files.length === 0) return;
@@ -842,6 +736,63 @@ const SyllabusSyncApp = () => {
               disabled={extractedData.length === 0}
             />
           </section>
+
+          {showPowerPlannerExport && (
+            <section className="bg-white dark:bg-gray-800 shadow-md rounded-lg overflow-hidden p-6 border border-gray-200 dark:border-gray-700">
+              <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+                Power Planner Export Options
+              </h2>
+
+              <div className="mb-4">
+                <label
+                  htmlFor="course-override"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Override Course Name (Optional)
+                </label>
+                <input
+                  id="course-override"
+                  type="text"
+                  value={courseOverride}
+                  onChange={(e) => setCourseOverride(e.target.value)}
+                  placeholder="e.g. CMP 158"
+                  className="w-full sm:w-64 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Leave empty to use original course names from the file
+                </p>
+              </div>
+
+              <div className="flex space-x-4">
+                <button
+                  onClick={handlePowerPlannerExport}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md shadow-sm text-sm font-medium focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+                >
+                  Export to Power Planner
+                </button>
+
+                <button
+                  onClick={() => setShowPowerPlannerExport(false)}
+                  className="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-md shadow-sm text-sm font-medium focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
+                >
+                  Cancel
+                </button>
+              </div>
+
+              <div className="mt-6 text-sm text-gray-600 dark:text-gray-400">
+                <h3 className="font-medium mb-2">
+                  Power Planner Import Instructions:
+                </h3>
+                <ol className="list-decimal pl-5 space-y-1">
+                  <li>Export the file using the button above</li>
+                  <li>Open the Power Planner app on your device</li>
+                  <li>Go to Settings &gt; Import Data</li>
+                  <li>Select the exported CSV file</li>
+                  <li>Review the imported assignments and confirm</li>
+                </ol>
+              </div>
+            </section>
+          )}
         </>
       )}
 
