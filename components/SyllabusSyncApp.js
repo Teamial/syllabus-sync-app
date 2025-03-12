@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
 import FileUploader from "./FileUploader";
@@ -13,6 +13,338 @@ import {
 import { parseTimelineSheet, detectTimelineFormat } from "./TimelineParser";
 import HelpSection from "./HelpSection";
 
+function validateAssignments(assignments) {
+  // Filter out any non-object assignments or workbook objects
+  return assignments.filter((assignment) => {
+    // Check if it's a plain object (not a workbook or other complex object)
+    if (
+      !assignment ||
+      typeof assignment !== "object" ||
+      Array.isArray(assignment)
+    ) {
+      console.warn("Filtered out non-object assignment:", assignment);
+      return false;
+    }
+
+    // Check for workbook-specific properties that indicate we've got a workbook object instead of an assignment
+    if (assignment.SheetNames || assignment.Sheets || assignment.Workbook) {
+      console.warn("Found workbook object in assignments, filtering it out");
+      return false;
+    }
+
+    // Check that it has the minimum required properties to be an assignment
+    if (!assignment.title || !assignment.dueDate) {
+      console.warn(
+        "Filtered out incomplete assignment missing title or dueDate:",
+        assignment,
+      );
+      return false;
+    }
+
+    return true;
+  });
+}
+// Format data for Power Planner CSV export
+function formatForPowerPlanner(assignments, courseOverride = "") {
+  if (!assignments || assignments.length === 0) {
+    return [];
+  }
+
+  return assignments
+    .map((item) => {
+      // Make sure we have valid data
+      if (!item || typeof item !== "object") {
+        console.warn("Invalid assignment data in formatForPowerPlanner:", item);
+        return null;
+      }
+
+      return {
+        Name: formatPowerPlannerTitle(item),
+        Class: courseOverride || item.course || "Unknown Course",
+        DueDate: formatPowerPlannerDate(item.dueDate || ""),
+        Details: formatPowerPlannerDetails(item),
+        Type: mapAssignmentType(item.type) || "Assignment",
+      };
+    })
+    .filter(Boolean); // Remove any null entries
+}
+
+// Format title for Power Planner
+function formatPowerPlannerTitle(item) {
+  if (!item.title) return "Unnamed Assignment";
+
+  // Make sure homework titles are properly formatted
+  if (item.type === "Homework" && !item.title.includes("Homework")) {
+    const hwNum = item.title.match(/\d+/);
+    if (hwNum) {
+      return `Homework ${hwNum[0]}`;
+    }
+  }
+
+  // Make sure P&C activity titles are properly formatted
+  if (item.type === "P&C Activity" && !item.title.includes("P&C Activity")) {
+    const activityNum = item.title.match(/\d+/);
+    if (activityNum) {
+      return `P&C Activity ${activityNum[0]}`;
+    }
+  }
+
+  return item.title;
+}
+
+// Format date for Power Planner
+function formatPowerPlannerDate(dateStr) {
+  try {
+    if (!dateStr) return "";
+
+    // If already in MM/DD/YYYY format, return as is
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(dateStr)) {
+      return dateStr;
+    }
+
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr; // Return original if not valid
+
+    return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+  } catch (e) {
+    console.warn("Error formatting Power Planner date:", e);
+    return dateStr; // Return original on error
+  }
+}
+
+// Format details for Power Planner
+function formatPowerPlannerDetails(item) {
+  const details = [];
+
+  if (item.description) {
+    details.push(item.description);
+  }
+
+  if (item.fileName) {
+    details.push(`Source: ${item.fileName}`);
+  }
+
+  return details.join("\n");
+}
+
+// Map assignment types to Power Planner compatible types
+function mapAssignmentType(type) {
+  if (!type) return "Assignment";
+
+  // Power Planner supports these assignment types
+  const typeMap = {
+    Homework: "Homework",
+    HW: "Homework",
+    "P&C Activity": "Activity",
+    "PC Activity": "Activity",
+    Project: "Project",
+    Exam: "Exam",
+    Midterm: "Exam",
+    "Midterm Exam": "Exam",
+    Final: "Exam",
+    "Final Exam": "Exam",
+    Quiz: "Quiz",
+    Test: "Test",
+  };
+
+  return typeMap[type] || type;
+}
+
+// Generate a CSV string from data
+function generateCSV(data) {
+  if (!data || data.length === 0) {
+    return "No data to export";
+  }
+
+  try {
+    return Papa.unparse(data);
+  } catch (error) {
+    console.error("Error generating CSV:", error);
+    return `Error generating CSV: ${error.message}`;
+  }
+}
+
+// Export to Power Planner
+function exportToPowerPlanner(extractedData, courseOverride = "") {
+  if (!extractedData || extractedData.length === 0) {
+    console.warn("No data to export");
+    return false;
+  }
+
+  try {
+    // Format for Power Planner
+    const formattedData = formatForPowerPlanner(extractedData, courseOverride);
+
+    // Generate CSV
+    const csv = generateCSV(formattedData);
+
+    // Download
+    downloadFile(csv, "power_planner_import.csv", "text/csv;charset=utf-8;");
+    return true;
+  } catch (error) {
+    console.error("Error exporting to Power Planner:", error);
+    return false;
+  }
+}
+
+// Export to ICS calendar format
+function exportToICS(extractedData) {
+  if (!extractedData || extractedData.length === 0) {
+    console.warn("No data to export to ICS");
+    return false;
+  }
+
+  try {
+    // Generate ICS calendar content
+    let icsContent = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//SyllabusSyncTool//EN",
+      "CALSCALE:GREGORIAN",
+      "METHOD:PUBLISH",
+    ];
+
+    // Add each assignment as an event
+    let validEventCount = 0;
+
+    for (const item of extractedData) {
+      try {
+        if (!item || !item.dueDate) continue;
+
+        // Parse the due date
+        const dueDate = new Date(item.dueDate);
+
+        // Skip if invalid
+        if (isNaN(dueDate.getTime())) continue;
+
+        // Format to ICS date format
+        const formatICSDate = (date) => {
+          return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+        };
+
+        const icsDate = formatICSDate(dueDate);
+        const uniqueId =
+          Math.random().toString(36).substring(2) + Date.now().toString(36);
+
+        // Add event
+        icsContent.push(
+          "BEGIN:VEVENT",
+          `UID:${uniqueId}@syllabus-sync.app`,
+          `DTSTAMP:${formatICSDate(new Date())}`,
+          `DTSTART:${icsDate}`,
+          `DTEND:${icsDate}`,
+          `SUMMARY:${(item.title || "Assignment").replace(/[,;\\]/g, "\\$&")}`,
+          `DESCRIPTION:${(item.description || "").replace(/[,;\\]/g, "\\$&")}`,
+          `LOCATION:${(item.course || "").replace(/[,;\\]/g, "\\$&")}`,
+          `CATEGORIES:${(item.type || "Assignment").replace(/[,;\\]/g, "\\$&")}`,
+          "END:VEVENT",
+        );
+
+        validEventCount++;
+      } catch (e) {
+        console.warn("Could not add event to ICS:", e);
+      }
+    }
+
+    // Close calendar
+    icsContent.push("END:VCALENDAR");
+
+    // Only download if we have valid events
+    if (validEventCount > 0) {
+      downloadFile(
+        icsContent.join("\r\n"),
+        "assignments_calendar.ics",
+        "text/calendar",
+      );
+      return true;
+    } else {
+      console.warn("No valid events to export to ICS");
+      return false;
+    }
+  } catch (error) {
+    console.error("Error exporting to ICS:", error);
+    return false;
+  }
+}
+
+// Export to generic CSV format
+function exportToCSV(extractedData) {
+  if (!extractedData || extractedData.length === 0) {
+    console.warn("No data to export to CSV");
+    return false;
+  }
+
+  try {
+    // Clean the data to ensure it's safe for CSV export
+    const cleanedData = extractedData
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+
+        // Create a new object with only the fields we want to export
+        return {
+          Title: item.title || "Unnamed Assignment",
+          DueDate: item.dueDate || "",
+          Course: item.course || "",
+          Type: item.type || "Assignment",
+          Description: item.description || "",
+        };
+      })
+      .filter(Boolean);
+
+    if (cleanedData.length === 0) {
+      console.warn("No valid data to export to CSV after cleaning");
+      return false;
+    }
+
+    // Generate and download CSV
+    const csv = Papa.unparse(cleanedData);
+    downloadFile(csv, "assignments_export.csv", "text/csv;charset=utf-8;");
+    return true;
+  } catch (error) {
+    console.error("Error exporting to CSV:", error);
+    return false;
+  }
+}
+
+// Generic file download function
+function downloadFile(content, filename, contentType) {
+  try {
+    const blob = new Blob([content], { type: contentType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    return true;
+  } catch (error) {
+    console.error("Error downloading file:", error);
+    return false;
+  }
+}
+
+function debugFindWorkbooks(data, path = "") {
+  if (!data) return;
+
+  if (Array.isArray(data)) {
+    data.forEach((item, index) => {
+      debugFindWorkbooks(item, `${path}[${index}]`);
+    });
+  } else if (typeof data === "object") {
+    // Check for workbook properties
+    if (data.SheetNames || data.Sheets || data.Workbook) {
+      console.error(`FOUND WORKBOOK at ${path}:`, data);
+    }
+
+    // Recursively check object properties
+    Object.keys(data).forEach((key) => {
+      debugFindWorkbooks(data[key], `${path}.${key}`);
+    });
+  }
+}
+
 export default function SyllabusSyncApp() {
   // State management
   const [files, setFiles] = useState([]);
@@ -23,6 +355,33 @@ export default function SyllabusSyncApp() {
   const [showPowerPlannerOptions, setShowPowerPlannerOptions] = useState(false);
   const [courseOverride, setCourseOverride] = useState("");
 
+  useEffect(() => {
+    // Debug check for workbooks in extractedData
+    if (extractedData && extractedData.length > 0) {
+      debugFindWorkbooks(extractedData, "extractedData");
+    }
+  }, [extractedData]);
+
+  // Add direct filtering to state setter
+  const safeSetExtractedData = (data) => {
+    // Filter out any workbook objects before setting state
+    if (Array.isArray(data)) {
+      const filteredData = data.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        // Filter out workbook objects
+        if (item.SheetNames || item.Sheets || item.Workbook) {
+          console.warn("Found workbook in data, filtering out", item);
+          return false;
+        }
+        return true;
+      });
+
+      setExtractedData(filteredData);
+    } else {
+      console.warn("Attempted to set non-array data:", data);
+      setExtractedData([]);
+    }
+  };
   // Handle file upload
   const handleFilesUploaded = useCallback((newFiles) => {
     setFiles((prevFiles) => [...prevFiles, ...newFiles]);
@@ -553,6 +912,7 @@ export default function SyllabusSyncApp() {
   };
 
   // Handle export button click
+  // Handle export button click
   const handleExport = () => {
     if (extractedData.length === 0) return;
 
@@ -560,9 +920,15 @@ export default function SyllabusSyncApp() {
       if (exportFormat === "powerplanner") {
         setShowPowerPlannerOptions(true);
       } else if (exportFormat === "ics") {
-        exportToICS();
+        const success = exportToICS(extractedData);
+        if (!success) {
+          setError("Failed to export ICS file: No valid assignments found");
+        }
       } else if (exportFormat === "csv") {
-        exportToCSV();
+        const success = exportToCSV(extractedData);
+        if (!success) {
+          setError("Failed to export CSV file: No valid assignments found");
+        }
       }
     } catch (err) {
       console.error("Export error:", err);
@@ -571,12 +937,14 @@ export default function SyllabusSyncApp() {
   };
 
   // Process all uploaded files
+  // Replace your existing processFiles function with this one
+  // Updated processFiles function using safeSetExtractedData
   const processFiles = async () => {
     if (!files || files.length === 0) return;
 
     setIsProcessing(true);
     setError(null);
-    setExtractedData([]);
+    setExtractedData([]); // Clear existing data
 
     try {
       const allAssignments = [];
@@ -587,10 +955,14 @@ export default function SyllabusSyncApp() {
 
           if (fileType === "xlsx" || fileType === "xls") {
             const excelAssignments = await processExcelFile(file);
-            allAssignments.push(...excelAssignments);
+            if (Array.isArray(excelAssignments)) {
+              allAssignments.push(...excelAssignments);
+            }
           } else if (fileType === "csv") {
             const csvAssignments = await processCSVFile(file);
-            allAssignments.push(...csvAssignments);
+            if (Array.isArray(csvAssignments)) {
+              allAssignments.push(...csvAssignments);
+            }
           } else {
             console.warn(`Unsupported file type: ${fileType}`);
           }
@@ -604,16 +976,33 @@ export default function SyllabusSyncApp() {
         }
       }
 
+      console.log("All assignments before validation:", allAssignments.length);
+
+      // Add extra validation - filter out any workbook objects
+      const cleanedAssignments = allAssignments.filter((item) => {
+        if (!item || typeof item !== "object") return false;
+        // Filter out workbook objects
+        if (item.SheetNames || item.Sheets || item.Workbook) {
+          console.warn("Found workbook in data, filtering out");
+          return false;
+        }
+        return true;
+      });
+
+      console.log("Assignments after cleaning:", cleanedAssignments.length);
+
       // Remove duplicates and sort by date
-      const uniqueAssignments = removeDuplicateAssignments(allAssignments);
+      const uniqueAssignments = removeDuplicateAssignments(cleanedAssignments);
       uniqueAssignments.sort(
         (a, b) => new Date(a.dueDate) - new Date(b.dueDate),
       );
 
-      setExtractedData(uniqueAssignments);
+      // Use the safe setter instead of direct state update
+      safeSetExtractedData(uniqueAssignments);
     } catch (err) {
       console.error("Error processing files:", err);
       setError(`Failed to process files: ${err.message}`);
+      safeSetExtractedData([]); // Set empty array on error
     } finally {
       setIsProcessing(false);
     }
@@ -752,7 +1141,9 @@ export default function SyllabusSyncApp() {
 
               <div className="flex space-x-4">
                 <button
-                  onClick={exportToPowerPlanner}
+                  onClick={() =>
+                    exportToPowerPlanner(extractedData, courseOverride)
+                  }
                   className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-md shadow-sm text-sm font-medium focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
                 >
                   Export to Power Planner

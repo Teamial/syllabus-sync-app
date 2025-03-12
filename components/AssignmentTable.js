@@ -10,23 +10,65 @@ const AssignmentTable = ({ assignments }) => {
   });
   const [searchTerm, setSearchTerm] = useState("");
 
+  // Filter out invalid assignments and workbook objects immediately
+  const safeAssignments = useMemo(() => {
+    if (!assignments) return [];
+    if (!Array.isArray(assignments)) {
+      console.error(
+        "AssignmentTable received non-array assignments:",
+        assignments,
+      );
+      return [];
+    }
+
+    return assignments.filter((item) => {
+      // Check if item is a valid assignment object
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        console.warn("Filtered out non-object assignment:", item);
+        return false;
+      }
+
+      // Check for workbook object properties
+      if (
+        item.SheetNames ||
+        item.Sheets ||
+        item.Workbook ||
+        item.Props ||
+        item.Deps
+      ) {
+        console.warn("Filtered out workbook object from assignments");
+        return false;
+      }
+
+      // Ensure item has the minimum required properties
+      if (!item.title || !item.dueDate) {
+        console.warn("Filtered out incomplete assignment:", item);
+        return false;
+      }
+
+      return true;
+    });
+  }, [assignments]);
+
   // Apply sorting and filtering
   const sortedAssignments = useMemo(() => {
-    if (!assignments || assignments.length === 0) return [];
+    if (!safeAssignments || safeAssignments.length === 0) return [];
 
-    let sortableItems = [...assignments];
+    let sortableItems = [...safeAssignments];
 
     // Filter items if search term exists
     if (searchTerm.trim()) {
       const lowerSearchTerm = searchTerm.toLowerCase();
       sortableItems = sortableItems.filter(
         (item) =>
-          (item.title && item.title.toLowerCase().includes(lowerSearchTerm)) ||
+          (item.title &&
+            String(item.title).toLowerCase().includes(lowerSearchTerm)) ||
           (item.course &&
-            item.course.toLowerCase().includes(lowerSearchTerm)) ||
-          (item.type && item.type.toLowerCase().includes(lowerSearchTerm)) ||
+            String(item.course).toLowerCase().includes(lowerSearchTerm)) ||
+          (item.type &&
+            String(item.type).toLowerCase().includes(lowerSearchTerm)) ||
           (item.description &&
-            item.description.toLowerCase().includes(lowerSearchTerm)),
+            String(item.description).toLowerCase().includes(lowerSearchTerm)),
       );
     }
 
@@ -70,7 +112,7 @@ const AssignmentTable = ({ assignments }) => {
     });
 
     return sortableItems;
-  }, [assignments, sortConfig, searchTerm]);
+  }, [safeAssignments, sortConfig, searchTerm]);
 
   const requestSort = (key) => {
     setSortConfig((prevConfig) => {
@@ -138,7 +180,7 @@ const AssignmentTable = ({ assignments }) => {
     );
   };
 
-  if (!assignments || assignments.length === 0) {
+  if (!safeAssignments || safeAssignments.length === 0) {
     return (
       <div className="text-center py-8">
         <p className="text-gray-500 dark:text-gray-400">
@@ -230,9 +272,21 @@ const AssignmentTable = ({ assignments }) => {
             </tr>
           </thead>
           <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
-            {sortedAssignments.map((item, index) => (
-              <AssignmentRow key={index} assignment={item} />
-            ))}
+            {sortedAssignments.map((item, index) => {
+              // Final safety check before rendering
+              if (
+                !item ||
+                typeof item !== "object" ||
+                item.SheetNames ||
+                item.Sheets
+              ) {
+                console.error("Invalid item detected in render loop:", item);
+                return null;
+              }
+              return (
+                <AssignmentRow key={`assignment-${index}`} assignment={item} />
+              );
+            })}
           </tbody>
         </table>
       </div>

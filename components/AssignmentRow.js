@@ -2,8 +2,34 @@
 import React from "react";
 
 const AssignmentRow = ({ assignment }) => {
+  // Safeguard against invalid assignment object
+  if (
+    !assignment ||
+    typeof assignment !== "object" ||
+    Array.isArray(assignment)
+  ) {
+    console.warn("Invalid assignment passed to AssignmentRow:", assignment);
+    return null;
+  }
+
+  // Detect XLSX workbook object and prevent rendering it
+  if (assignment.SheetNames || assignment.Sheets || assignment.Workbook) {
+    console.error(
+      "XLSX workbook object passed to AssignmentRow, skipping render",
+    );
+    return null;
+  }
+
+  // Destructure with defaults to avoid undefined errors
+  const {
+    title = "Unnamed Assignment",
+    dueDate = "",
+    course = "",
+    description = "",
+    type = "Assignment",
+  } = assignment;
+
   // Determine badge color based on assignment type
-  // Improve the badge styling for better visibility
   const getBadgeClass = (type) => {
     const typeColors = {
       Homework: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
@@ -27,7 +53,7 @@ const AssignmentRow = ({ assignment }) => {
   // Format the due date for display
   const formatDisplayDate = (dateStr) => {
     try {
-      if (!dateStr) return "";
+      if (!dateStr) return "No date";
 
       const date = new Date(dateStr);
       if (isNaN(date.getTime())) return dateStr;
@@ -39,7 +65,8 @@ const AssignmentRow = ({ assignment }) => {
       // Format as "Tue, 3/11/2025"
       return `${dayName}, ${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
     } catch (e) {
-      return dateStr;
+      console.warn("Error formatting date:", e);
+      return dateStr || "Invalid date";
     }
   };
 
@@ -59,6 +86,7 @@ const AssignmentRow = ({ assignment }) => {
 
       return diffDays;
     } catch (e) {
+      console.warn("Error calculating days remaining:", e);
       return null;
     }
   };
@@ -85,38 +113,44 @@ const AssignmentRow = ({ assignment }) => {
     return "text-green-600 dark:text-green-400";
   };
 
+  // Truncate text if too long
+  const truncateText = (text, maxLength = 120) => {
+    if (!text) return "";
+    return text.length > maxLength
+      ? text.substring(0, maxLength) + "..."
+      : text;
+  };
+
   return (
     <tr className="hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
       <td className="px-4 py-3">
         <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-          {assignment.title}
+          {title || "Unnamed Assignment"}
         </div>
-        {assignment.description && (
+        {description && (
           <div className="text-xs text-gray-500 dark:text-gray-400 max-w-xs truncate mt-1">
-            {assignment.description}
+            {truncateText(description)}
           </div>
         )}
       </td>
       <td className="px-4 py-3">
         <div className="text-sm text-gray-700 dark:text-gray-300">
-          {formatDisplayDate(assignment.dueDate)}
+          {formatDisplayDate(dueDate)}
         </div>
-        <div
-          className={`text-xs ${getDaysRemainingClass(assignment.dueDate)} mt-1`}
-        >
-          {getDaysRemainingText(assignment.dueDate)}
+        <div className={`text-xs ${getDaysRemainingClass(dueDate)} mt-1`}>
+          {getDaysRemainingText(dueDate)}
         </div>
       </td>
       <td className="px-4 py-3">
         <div className="text-sm text-gray-700 dark:text-gray-300">
-          {assignment.course}
+          {course || "No course"}
         </div>
       </td>
       <td className="px-4 py-3 hidden md:table-cell">
         <span
-          className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getBadgeClass(assignment.type)}`}
+          className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getBadgeClass(type)}`}
         >
-          {assignment.type}
+          {type || "Assignment"}
         </span>
       </td>
     </tr>
