@@ -3,6 +3,7 @@ import React from "react";
 
 const AssignmentRow = ({ assignment }) => {
   // Determine badge color based on assignment type
+  // Improve the badge styling for better visibility
   const getBadgeClass = (type) => {
     const typeColors = {
       Homework: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
@@ -11,7 +12,6 @@ const AssignmentRow = ({ assignment }) => {
       Project:
         "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
       Exam: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-      Midterm: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
       "Midterm Exam":
         "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
       "Final Exam": "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",

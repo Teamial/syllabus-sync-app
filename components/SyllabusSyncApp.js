@@ -10,14 +10,8 @@ import {
   isDateInPast,
   extractYearFromSheetName,
 } from "./DateUtils";
-import {
-  parsePCActivityDueDate,
-  parseHomeworkDueDate,
-  parseExamDate,
-  parseProjectDueDate,
-  formatForPowerPlanner,
-  generateCSV,
-} from "./TimelineParser";
+import { parseTimelineSheet, detectTimelineFormat } from "./TimelineParser";
+import HelpSection from "./HelpSection";
 
 export default function SyllabusSyncApp() {
   // State management
@@ -53,6 +47,9 @@ export default function SyllabusSyncApp() {
   };
 
   // Process Excel files
+  // Enhanced function to detect timeline format
+
+  // Modify the processExcelFile function to check for timeline format
   const processExcelFile = async (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -68,17 +65,10 @@ export default function SyllabusSyncApp() {
 
           // Extract course name from filename
           const courseName = extractCourseCode(file.name);
-
-          // Get current year for context
           const currentYear = new Date().getFullYear();
 
-          // Extract semester if available
-          let semester = "Spring";
-          if (file.name.toLowerCase().includes("fall")) {
-            semester = "Fall";
-          } else if (file.name.toLowerCase().includes("summer")) {
-            semester = "Summer";
-          }
+          // Check if this looks like a timeline format workbook
+          const isTimeline = detectTimelineFormat(workbook);
 
           // Process assignments from all sheets
           const assignments = [];
@@ -87,188 +77,20 @@ export default function SyllabusSyncApp() {
             // Skip sheets that look like they contain metadata/info
             if (/info|metadata|readme|about/i.test(sheetName)) continue;
 
-            // Extract year from sheet name if present
-            const sheetYear =
-              extractYearFromSheetName(sheetName) || currentYear;
-
             const sheet = workbook.Sheets[sheetName];
-            const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
-            // Skip empty sheets
-            if (!jsonData || jsonData.length < 2) continue;
-
-            // Analyze sheet structure to identify date columns and assignment columns
-            const columnMap = analyzeSheetStructure(jsonData);
-
-            // Process rows to extract assignments
-            for (let i = 1; i < jsonData.length; i++) {
-              const row = jsonData[i];
-              if (!row || row.length === 0) continue;
-
-              // Get row date
-              let rowDate = null;
-              if (columnMap.dateColumn !== -1 && row[columnMap.dateColumn]) {
-                if (row[columnMap.dateColumn] instanceof Date) {
-                  rowDate = row[columnMap.dateColumn];
-                } else {
-                  const dateValue = row[columnMap.dateColumn];
-                  rowDate = parseDate(dateValue, sheetYear);
-                }
-              }
-
-              // Skip rows without dates
-              if (!rowDate) continue;
-
-              // Skip dates in the past
-              if (isDateInPast(rowDate)) continue;
-
-              // Process homework assignments
-              for (const col of columnMap.hwColumns) {
-                if (row[col] && typeof row[col] === "string") {
-                  const text = row[col];
-                  if (/hw|homework/i.test(text)) {
-                    const hwMatch = text.match(/(?:hw|homework)\s*(\d+)/i);
-                    const hwNum = hwMatch ? hwMatch[1] : "";
-
-                    // Get due date - either explicit or based on row date
-                    const dueDate =
-                      parseHomeworkDueDate(text, rowDate, sheetYear) || rowDate;
-
-                    assignments.push({
-                      title: `Homework ${hwNum}`,
-                      dueDate: formatDate(dueDate),
-                      course: courseName,
-                      description:
-                        getTopicText(row, columnMap) +
-                        (text ? ` - ${text}` : ""),
-                      type: "Homework",
-                      fileName: file.name,
-                    });
-                  }
-                }
-              }
-
-              // Process P&C Activities
-              for (const col of columnMap.pcColumns) {
-                if (row[col] && typeof row[col] === "string") {
-                  const text = row[col];
-                  if (/p&c|activity/i.test(text)) {
-                    const activityMatch = text.match(
-                      /(?:activity|p&c)\s*(\d+)/i,
-                    );
-                    const activityNum = activityMatch ? activityMatch[1] : "";
-
-                    // Get due date
-                    const dueDate =
-                      parsePCActivityDueDate(text, rowDate, sheetYear) ||
-                      rowDate;
-
-                    assignments.push({
-                      title: `P&C Activity ${activityNum}`,
-                      dueDate: formatDate(dueDate),
-                      course: courseName,
-                      description:
-                        getTopicText(row, columnMap) +
-                        (text ? ` - ${text}` : ""),
-                      type: "P&C Activity",
-                      fileName: file.name,
-                    });
-                  }
-                }
-              }
-
-              // Process Projects
-              for (const col of columnMap.projectColumns) {
-                if (row[col] && typeof row[col] === "string") {
-                  const text = row[col];
-                  if (/project/i.test(text)) {
-                    const projectMatch = text.match(/project\s*(\d+)/i);
-                    const projectNum = projectMatch ? projectMatch[1] : "";
-
-                    // Get due date
-                    const dueDate =
-                      parseProjectDueDate(text, rowDate, sheetYear) || rowDate;
-
-                    assignments.push({
-                      title: `Project ${projectNum}`,
-                      dueDate: formatDate(dueDate),
-                      course: courseName,
-                      description:
-                        getTopicText(row, columnMap) +
-                        (text ? ` - ${text}` : ""),
-                      type: "Project",
-                      fileName: file.name,
-                    });
-                  }
-                }
-              }
-
-              // Process Exams
-              for (const col of columnMap.examColumns) {
-                if (row[col] && typeof row[col] === "string") {
-                  const text = row[col];
-                  if (/exam|midterm|final/i.test(text)) {
-                    const examInfo = parseExamDate(text, rowDate, sheetYear);
-
-                    if (examInfo) {
-                      assignments.push({
-                        title: examInfo.type,
-                        dueDate: formatDate(examInfo.date),
-                        course: courseName,
-                        description:
-                          getTopicText(row, columnMap) +
-                          (text ? ` - ${text}` : ""),
-                        type: examInfo.type,
-                        fileName: file.name,
-                      });
-                    }
-                  }
-                }
-              }
-
-              // Also scan topic columns for embedded assignments
-              for (const col of columnMap.topicColumns) {
-                if (row[col] && typeof row[col] === "string") {
-                  const text = row[col].toLowerCase();
-
-                  // Look for embedded project references
-                  if (
-                    text.includes("project") &&
-                    (text.includes("due") || text.includes("submit"))
-                  ) {
-                    const projectMatch = text.match(/project\s*(\d+)/i);
-                    const projectNum = projectMatch ? projectMatch[1] : "";
-
-                    assignments.push({
-                      title: `Project ${projectNum}`,
-                      dueDate: formatDate(rowDate),
-                      course: courseName,
-                      description: row[col],
-                      type: "Project",
-                      fileName: file.name,
-                    });
-                  }
-
-                  // Look for embedded exam references
-                  if (
-                    (text.includes("midterm") || text.includes("final")) &&
-                    text.includes("exam")
-                  ) {
-                    const examType = text.includes("midterm")
-                      ? "Midterm Exam"
-                      : "Final Exam";
-
-                    assignments.push({
-                      title: examType,
-                      dueDate: formatDate(rowDate),
-                      course: courseName,
-                      description: row[col],
-                      type: examType,
-                      fileName: file.name,
-                    });
-                  }
-                }
-              }
+            if (isTimeline) {
+              // Use specialized timeline parser
+              const timelineAssignments = parseTimelineSheet(
+                sheet,
+                workbook,
+                courseName,
+                currentYear,
+              );
+              assignments.push(...timelineAssignments);
+            } else {
+              // Use the existing parser for other formats
+              const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
             }
           }
 
@@ -287,6 +109,134 @@ export default function SyllabusSyncApp() {
 
       reader.readAsArrayBuffer(file);
     });
+  };
+
+  const isTimelineFormat = (sheet) => {
+    // Check if the first few rows contain specific headers like in Image 2
+    const headers = XLSX.utils.sheet_to_json(sheet, { header: 1 })[0] || [];
+    const headerText = headers.join(" ").toLowerCase();
+
+    return (
+      headerText.includes("p&c due by") ||
+      headerText.includes("hw due by") ||
+      (headerText.includes("date") && headerText.includes("week"))
+    );
+  };
+
+  // Add a specialized parser for the timeline format
+  const parseTimelineSheet = (sheet, courseName, currentYear) => {
+    const assignments = [];
+    const jsonData = XLSX.utils.sheet_to_json(sheet);
+
+    jsonData.forEach((row) => {
+      // Look for P&C Activities
+      if (row["P&C Due By 11:59 PM On Specified Date"]) {
+        assignments.push({
+          title: `P&C Activity ${extractActivityNumber(row)}`,
+          dueDate: formatDate(
+            parseDate(row["P&C Due By 11:59 PM On Specified Date"]),
+          ),
+          course: courseName,
+          description: extractTopicDescription(row),
+          type: "P&C Activity",
+        });
+      }
+
+      // Look for Homework
+      if (row["HW Due By 11:59 PM On Specified Date"]) {
+        assignments.push({
+          title: `Homework ${extractHomeworkNumber(row)}`,
+          dueDate: formatDate(
+            parseDate(row["HW Due By 11:59 PM On Specified Date"]),
+          ),
+          course: courseName,
+          description: extractTopicDescription(row),
+          type: "Homework",
+        });
+      }
+
+      // Look for exams in the topic columns
+      if (
+        row["Lecture Topic T,Th"] &&
+        row["Lecture Topic T,Th"].toLowerCase().includes("exam")
+      ) {
+        assignments.push({
+          title: extractExamTitle(row["Lecture Topic T,Th"]),
+          dueDate: formatDate(parseDate(row["Date"])),
+          course: courseName,
+          description: row["Lecture Topic T,Th"],
+          type: "Exam",
+        });
+      }
+
+      // Look for projects
+      if (
+        row["Lab Session Topic"] &&
+        row["Lab Session Topic"].toLowerCase().includes("project")
+      ) {
+        assignments.push({
+          title: extractProjectTitle(row["Lab Session Topic"]),
+          dueDate: formatDate(parseDate(row["Date"])),
+          course: courseName,
+          description: row["Lab Session Topic"],
+          type: "Project",
+        });
+      }
+    });
+
+    return assignments;
+  };
+
+  // Helper function to extract activity number
+  const extractActivityNumber = (row) => {
+    // Look in lecture topic or other columns
+    const text = row["Lecture Topic T,Th"] || "";
+    const match = text.match(/P&C Activity (\d+)/i);
+    return match ? match[1] : "";
+  };
+
+  // Helper function to extract homework number
+  const extractHomeworkNumber = (row) => {
+    const text = row["Lecture Topic T,Th"] || "";
+    const match = text.match(/HW (\d+)/i);
+    return match ? match[1] : "";
+  };
+
+  // Helper function to extract exam title
+  const extractExamTitle = (text) => {
+    if (!text) return "Exam";
+
+    if (text.toLowerCase().includes("midterm")) {
+      return "Midterm Exam";
+    } else if (text.toLowerCase().includes("final")) {
+      return "Final Exam";
+    }
+
+    return "Exam";
+  };
+
+  // Helper function to extract project title
+  const extractProjectTitle = (text) => {
+    if (!text) return "Project";
+
+    const match = text.match(/PROJECT (\d+)/i);
+    return match ? `Project ${match[1]}` : "Project";
+  };
+
+  // Helper function to extract topic description
+  const extractTopicDescription = (row) => {
+    let description = "";
+
+    if (row["Lecture Topic T,Th"]) {
+      description += row["Lecture Topic T,Th"];
+    }
+
+    if (row["Lab Session Topic"]) {
+      if (description) description += " - ";
+      description += row["Lab Session Topic"];
+    }
+
+    return description;
   };
 
   // Analyze sheet structure to identify important columns
@@ -685,6 +635,7 @@ export default function SyllabusSyncApp() {
     return uniqueAssignments;
   };
 
+  // Here, add the render method that was previously in the second function
   return (
     <div className="flex flex-col space-y-8 max-w-6xl mx-auto">
       <header className="text-center">
@@ -720,11 +671,11 @@ export default function SyllabusSyncApp() {
             onClick={processFiles}
             disabled={files.length === 0 || isProcessing}
             className={`inline-flex items-center px-4 py-2 rounded-md shadow-sm text-sm font-medium text-white
-              ${
-                files.length === 0 || isProcessing
-                  ? "bg-gray-300 dark:bg-gray-700 cursor-not-allowed"
-                  : "bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-              }`}
+            ${
+              files.length === 0 || isProcessing
+                ? "bg-gray-300 dark:bg-gray-700 cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            }`}
           >
             {isProcessing ? (
               <>
@@ -756,6 +707,7 @@ export default function SyllabusSyncApp() {
           </button>
         </div>
       </section>
+      <HelpSection />
 
       {extractedData.length > 0 && (
         <>

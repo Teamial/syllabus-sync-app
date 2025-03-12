@@ -1,289 +1,292 @@
+// components/TimelineParser.js
+
+import * as XLSX from "xlsx";
 import { parseDate, formatDate } from "./DateUtils";
 
 /**
- * Parse P&C Activity due dates using multiple strategies
+ * Parses an Excel sheet that has a timeline format like a course schedule
+ * @param {Object} sheet - XLSX worksheet object
+ * @param {Object} workbook - XLSX workbook object
+ * @param {String} courseName - The name of the course
+ * @param {Number} currentYear - The current year for context
+ * @returns {Array} - Array of assignment objects
  */
-export function parsePCActivityDueDate(cellText, rowDate, sheetYear) {
-  if (!cellText) return null;
+export function parseTimelineSheet(sheet, workbook, courseName, currentYear) {
+  const assignments = [];
 
-  // Check for explicit due date in the cell "Due by MM/DD"
-  const dueDateMatch = cellText.match(
-    /due\s+by\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i,
-  );
+  // Convert sheet to JSON with headers
+  const jsonData = XLSX.utils.sheet_to_json(sheet);
+
+  // If no data, return empty array
+  if (!jsonData || jsonData.length === 0) return assignments;
+
+  // Analyze the structure to find column headers
+  const columnMap = analyzeTimelineStructure(jsonData[0]);
+
+  // Process each row
+  jsonData.forEach((row) => {
+    // Skip rows without dates
+    if (!row[columnMap.dateColumn] && !row.Date) return;
+
+    // Get the row date (try multiple possible date column names)
+    const rowDate = parseDate(
+      row[columnMap.dateColumn] || row.Date || row.date,
+      currentYear,
+    );
+
+    // Skip invalid dates
+    if (!rowDate) return;
+
+    // Extract P&C Activities
+    if (
+      row[columnMap.pcColumn] &&
+      typeof row[columnMap.pcColumn] === "string"
+    ) {
+      const pcActivity = extractPCActivity(
+        row[columnMap.pcColumn],
+        rowDate,
+        courseName,
+      );
+      if (pcActivity) {
+        assignments.push(pcActivity);
+      }
+    }
+
+    // Extract Homework assignments
+    if (
+      row[columnMap.hwColumn] &&
+      typeof row[columnMap.hwColumn] === "string"
+    ) {
+      const homework = extractHomework(
+        row[columnMap.hwColumn],
+        rowDate,
+        courseName,
+      );
+      if (homework) {
+        assignments.push(homework);
+      }
+    }
+
+    // Look for exams in lecture topics
+    if (
+      row[columnMap.topicColumn] &&
+      typeof row[columnMap.topicColumn] === "string" &&
+      row[columnMap.topicColumn].toLowerCase().includes("exam")
+    ) {
+      const exam = extractExam(row[columnMap.topicColumn], rowDate, courseName);
+      if (exam) {
+        assignments.push(exam);
+      }
+    }
+
+    // Look for projects in lab session topics
+    if (
+      row[columnMap.labColumn] &&
+      typeof row[columnMap.labColumn] === "string" &&
+      row[columnMap.labColumn].toLowerCase().includes("project")
+    ) {
+      const project = extractProject(
+        row[columnMap.labColumn],
+        rowDate,
+        courseName,
+      );
+      if (project) {
+        assignments.push(project);
+      }
+    }
+  });
+
+  return assignments;
+}
+
+/**
+ * Analyzes the timeline structure to identify important columns
+ */
+function analyzeTimelineStructure(headerRow) {
+  const columnMap = {
+    dateColumn: null,
+    pcColumn: null,
+    hwColumn: null,
+    topicColumn: null,
+    labColumn: null,
+  };
+
+  // Go through all properties in the header row
+  Object.keys(headerRow).forEach((key) => {
+    const lowerKey = key.toLowerCase();
+
+    if (lowerKey === "date") {
+      columnMap.dateColumn = key;
+    } else if (lowerKey.includes("p&c") || lowerKey.includes("p & c")) {
+      columnMap.pcColumn = key;
+    } else if (lowerKey.includes("hw") || lowerKey.includes("homework")) {
+      columnMap.hwColumn = key;
+    } else if (lowerKey.includes("lecture") || lowerKey.includes("topic")) {
+      columnMap.topicColumn = key;
+    } else if (lowerKey.includes("lab")) {
+      columnMap.labColumn = key;
+    }
+  });
+
+  return columnMap;
+}
+
+/**
+ * Extract P&C activity from cell text
+ */
+function extractPCActivity(cellText, rowDate, courseName) {
+  if (!cellText || !rowDate) return null;
+
+  // Skip empty activities
+  if (cellText === "-" || cellText.trim() === "") return null;
+
+  // Extract activity number
+  const activityMatch = cellText.match(/(?:P&C|Activity)\s*(\d+)/i);
+  const activityNum = activityMatch ? activityMatch[1] : "";
+
+  // Find specific date if mentioned
+  const dueDateMatch = cellText.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
+  let dueDate = rowDate;
+
   if (dueDateMatch) {
     const month = parseInt(dueDateMatch[1]);
     const day = parseInt(dueDateMatch[2]);
-    let year = dueDateMatch[3] ? parseInt(dueDateMatch[3]) : sheetYear;
+    let year = dueDateMatch[3]
+      ? parseInt(dueDateMatch[3])
+      : rowDate.getFullYear();
 
-    // Handle 2-digit years
-    if (year < 100) {
-      year = year < 50 ? 2000 + year : 1900 + year;
-    }
-
-    return new Date(year, month - 1, day);
+    dueDate = new Date(year, month - 1, day);
   }
 
-  // If we have a row date, P&C activities are typically due within a week
-  if (rowDate) {
-    const dueDate = new Date(rowDate);
-    dueDate.setDate(dueDate.getDate() + 7); // Add one week
-    return dueDate;
-  }
-
-  return null;
+  return {
+    title: `P&C Activity ${activityNum}`,
+    dueDate: formatDate(dueDate),
+    course: courseName,
+    description: cellText,
+    type: "P&C Activity",
+  };
 }
 
 /**
- * Parse Homework assignment due dates
+ * Extract homework from cell text
  */
-export function parseHomeworkDueDate(cellText, rowDate, sheetYear) {
-  if (!cellText) return null;
+function extractHomework(cellText, rowDate, courseName) {
+  if (!cellText || !rowDate) return null;
 
-  // Check for explicit due date in the cell "Due by MM/DD"
-  const dueDateMatch = cellText.match(
-    /due\s+by\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/i,
-  );
+  // Skip empty assignments
+  if (cellText === "-" || cellText.trim() === "") return null;
+
+  // Extract homework number
+  const hwMatch = cellText.match(/(?:HW|Homework)\s*(\d+)/i);
+  const hwNum = hwMatch ? hwMatch[1] : "";
+
+  // Find specific date if mentioned
+  const dueDateMatch = cellText.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
+  let dueDate = rowDate;
+
   if (dueDateMatch) {
     const month = parseInt(dueDateMatch[1]);
     const day = parseInt(dueDateMatch[2]);
-    let year = dueDateMatch[3] ? parseInt(dueDateMatch[3]) : sheetYear;
+    let year = dueDateMatch[3]
+      ? parseInt(dueDateMatch[3])
+      : rowDate.getFullYear();
 
-    // Handle 2-digit years
-    if (year < 100) {
-      year = year < 50 ? 2000 + year : 1900 + year;
-    }
-
-    return new Date(year, month - 1, day);
+    dueDate = new Date(year, month - 1, day);
   }
 
-  // If we have a row date, homework assignments are typically due within two weeks
-  if (rowDate) {
-    const dueDate = new Date(rowDate);
-    dueDate.setDate(dueDate.getDate() + 14); // Add two weeks
-    return dueDate;
-  }
-
-  return null;
+  return {
+    title: `Homework ${hwNum}`,
+    dueDate: formatDate(dueDate),
+    course: courseName,
+    description: cellText,
+    type: "Homework",
+  };
 }
 
 /**
- * Parse project due dates
+ * Extract exam from cell text
  */
-export function parseProjectDueDate(cellText, rowDate, sheetYear) {
-  if (!cellText) return null;
+function extractExam(cellText, rowDate, courseName) {
+  if (!cellText || !rowDate) return null;
 
-  if (!/project/i.test(cellText)) {
-    return null; // Not a project cell
-  }
-
-  // Format 1: Date in MM/DD/YYYY format
-  const dateMatch = cellText.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (dateMatch) {
-    const month = parseInt(dateMatch[1]);
-    const day = parseInt(dateMatch[2]);
-    const year = parseInt(dateMatch[3]);
-    return new Date(year, month - 1, day);
-  }
-
-  // Format 2: Weekday with date
-  const weekdayMatch = cellText.match(
-    /(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/i,
-  );
-  if (weekdayMatch) {
-    const month = parseInt(weekdayMatch[1]);
-    const day = parseInt(weekdayMatch[2]);
-    let year = weekdayMatch[3] ? parseInt(weekdayMatch[3]) : sheetYear;
-
-    if (year < 100) {
-      year = year < 50 ? 2000 + year : 1900 + year;
-    }
-
-    return new Date(year, month - 1, day);
-  }
-
-  // If project contains "DUE" and we have a row date
-  if (/due/i.test(cellText) && rowDate) {
-    // Projects typically due 2-3 weeks after they're assigned
-    const dueDate = new Date(rowDate);
-    dueDate.setDate(dueDate.getDate() + 21); // 3 weeks after row date
-    return dueDate;
-  }
-
-  return null;
-}
-
-/**
- * Parse exam (midterm/final) dates
- */
-export function parseExamDate(cellText, rowDate, sheetYear) {
-  if (!cellText) return null;
-
-  // Skip cells that are just about review or exam setup
-  if (/review|buffer|opens/i.test(cellText) && !/due|closes/i.test(cellText)) {
+  // Skip if not exam related
+  if (
+    !cellText.toLowerCase().includes("exam") &&
+    !cellText.toLowerCase().includes("midterm") &&
+    !cellText.toLowerCase().includes("final")
+  ) {
     return null;
   }
 
   let examType = "Exam";
-  if (/midterm/i.test(cellText)) {
+  if (cellText.toLowerCase().includes("midterm")) {
     examType = "Midterm Exam";
-  } else if (/final/i.test(cellText)) {
+  } else if (cellText.toLowerCase().includes("final")) {
     examType = "Final Exam";
-  } else if (!/exam/i.test(cellText)) {
-    return null; // Not an exam at all
-  }
-
-  // Try to extract explicit date
-  const dateMatch = cellText.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
-  let dueDate = null;
-
-  if (dateMatch) {
-    const month = parseInt(dateMatch[1]);
-    const day = parseInt(dateMatch[2]);
-    let year = dateMatch[3] ? parseInt(dateMatch[3]) : sheetYear;
-
-    if (year < 100) {
-      year = year < 50 ? 2000 + year : 1900 + year;
-    }
-
-    dueDate = new Date(year, month - 1, day);
-  } else if (rowDate) {
-    dueDate = new Date(rowDate);
-  }
-
-  if (!dueDate || isNaN(dueDate.getTime())) {
-    return null;
   }
 
   return {
-    date: dueDate,
+    title: examType,
+    dueDate: formatDate(rowDate),
+    course: courseName,
+    description: cellText,
     type: examType,
   };
 }
 
 /**
- * Format assignments for Power Planner CSV export
+ * Extract project from cell text
  */
-export function formatForPowerPlanner(assignments, courseOverride = "") {
-  if (!assignments || !Array.isArray(assignments) || assignments.length === 0) {
-    return [];
+function extractProject(cellText, rowDate, courseName) {
+  if (!cellText || !rowDate) return null;
+
+  // Skip if not project related
+  if (!cellText.toLowerCase().includes("project")) {
+    return null;
   }
 
-  return assignments.map((item) => {
-    // Apply course override if provided
-    const course = courseOverride
-      ? courseOverride
-      : item.course || "Unknown Course";
+  // Extract project number
+  const projectMatch = cellText.match(/PROJECT\s*(\d+)/i);
+  const projectNum = projectMatch ? projectMatch[1] : "";
 
-    return {
-      Name: item.title || "Unnamed Assignment",
-      Class: course,
-      DueDate: formatDateForPowerPlanner(item.dueDate || ""),
-      Details: formatDetails(item),
-      Type: mapAssignmentType(item.type) || "Assignment",
-    };
-  });
-}
-
-/**
- * Format date for Power Planner (MM/DD/YYYY)
- */
-function formatDateForPowerPlanner(dateValue) {
-  if (!dateValue) return "";
-
-  try {
-    // If it's already a string in MM/DD/YYYY format
-    if (
-      typeof dateValue === "string" &&
-      /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(dateValue)
-    ) {
-      return dateValue;
-    }
-
-    // Convert to Date object
-    const date =
-      typeof dateValue === "string" ? new Date(dateValue) : dateValue;
-
-    if (isNaN(date.getTime())) return "";
-
-    // Format as MM/DD/YYYY which Power Planner expects
-    return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
-  } catch (e) {
-    console.error("Error formatting date for Power Planner:", e);
-    return "";
-  }
-}
-
-/**
- * Format the details field for Power Planner
- */
-function formatDetails(item) {
-  const details = [];
-
-  if (item.description) {
-    details.push(item.description);
-  }
-
-  // Include the source file
-  if (item.fileName) {
-    details.push(`Source: ${item.fileName}`);
-  }
-
-  return details.join("\n");
-}
-
-/**
- * Map internal assignment types to Power Planner compatible types
- */
-function mapAssignmentType(type) {
-  if (!type) return "Assignment";
-
-  // Power Planner supports these assignment types:
-  const typeMap = {
-    Homework: "Homework",
-    HW: "Homework",
-    "P&C Activity": "Activity",
-    "PC Activity": "Activity",
-    Project: "Project",
-    Exam: "Exam",
-    Midterm: "Exam",
-    "Midterm Exam": "Exam",
-    Final: "Exam",
-    "Final Exam": "Exam",
-    Quiz: "Quiz",
-    Test: "Test",
+  return {
+    title: `Project ${projectNum}`,
+    dueDate: formatDate(rowDate),
+    course: courseName,
+    description: cellText,
+    type: "Project",
   };
-
-  // Return mapped type or default to original type
-  return typeMap[type] || type;
 }
 
 /**
- * Generate CSV content from formatted assignments
+ * Detect if the workbook contains a timeline format
  */
-export function generateCSV(formattedAssignments) {
-  if (!formattedAssignments || formattedAssignments.length === 0) {
-    return "";
-  }
+export function detectTimelineFormat(workbook) {
+  let hasTimelineFormat = false;
 
-  // Header row with field names
-  const header = Object.keys(formattedAssignments[0]).join(",");
+  // Check each sheet
+  workbook.SheetNames.forEach((sheetName) => {
+    const sheet = workbook.Sheets[sheetName];
+    const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
-  // Data rows
-  const rows = formattedAssignments.map((item) => {
-    return Object.values(item)
-      .map((value) => {
-        // Properly escape values containing commas or quotes
-        if (
-          typeof value === "string" &&
-          (value.includes(",") || value.includes('"'))
-        ) {
-          return `"${value.replace(/"/g, '""')}"`;
-        }
-        return value;
-      })
-      .join(",");
+    // Skip empty sheets
+    if (!jsonData || jsonData.length < 2) return;
+
+    const headerRow = jsonData[0];
+    if (!headerRow) return;
+
+    // Convert header row to string for pattern matching
+    const headerText = headerRow.join(" ").toLowerCase();
+
+    // Check for patterns found in timeline sheets
+    if (
+      headerText.includes("week") &&
+      headerText.includes("date") &&
+      (headerText.includes("lecture") || headerText.includes("lab"))
+    ) {
+      hasTimelineFormat = true;
+    }
   });
 
-  // Combine header and rows
-  return [header, ...rows].join("\n");
+  return hasTimelineFormat;
 }

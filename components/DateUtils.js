@@ -1,4 +1,5 @@
 // Parse a date string or value into a Date object
+// Enhanced date parser
 export function parseDate(dateValue, currentYear = new Date().getFullYear()) {
   if (!dateValue) return null;
 
@@ -16,16 +17,10 @@ export function parseDate(dateValue, currentYear = new Date().getFullYear()) {
     // Handle string date formats
     const dateString = String(dateValue).trim();
 
-    // Direct parsing for standard format
+    // Try direct parsing first
     let parsedDate = new Date(dateString);
-
-    // Check if the date is valid
     if (!isNaN(parsedDate.getTime())) {
-      // Check if the year is reasonable
-      if (Math.abs(parsedDate.getFullYear() - currentYear) > 5) {
-        parsedDate.setFullYear(currentYear);
-      }
-      return parsedDate;
+      return adjustYearIfNeeded(parsedDate, currentYear);
     }
 
     // Try MM/DD/YY format
@@ -33,18 +28,27 @@ export function parseDate(dateValue, currentYear = new Date().getFullYear()) {
       /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/,
     );
     if (dateParts) {
-      // Use array indices instead of destructuring with unused variable
-      const month = dateParts[1];
-      const day = dateParts[2];
-      const year = dateParts[3];
-      let fullYear = parseInt(year);
+      const month = parseInt(dateParts[1]);
+      const day = parseInt(dateParts[2]);
+      let year = parseInt(dateParts[3]);
 
       // Handle 2-digit years
-      if (fullYear < 100) {
-        fullYear += fullYear < 50 ? 2000 : 1900;
+      if (year < 100) {
+        year += year < 50 ? 2000 : 1900;
       }
 
-      return new Date(fullYear, parseInt(month) - 1, parseInt(day));
+      return new Date(year, month - 1, day);
+    }
+
+    // Handle dates like "Saturday 03/29/2025"
+    const weekdayDateMatch = dateString.match(
+      /(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2})\/(\d{1,2})\/(\d{4})/i,
+    );
+    if (weekdayDateMatch) {
+      const month = parseInt(weekdayDateMatch[2]);
+      const day = parseInt(weekdayDateMatch[3]);
+      const year = parseInt(weekdayDateMatch[4]);
+      return new Date(year, month - 1, day);
     }
 
     // Try to extract date from text patterns
@@ -68,6 +72,17 @@ export function parseDate(dateValue, currentYear = new Date().getFullYear()) {
     console.error("Error parsing date:", e, dateValue);
     return null;
   }
+}
+
+// Helper to adjust year if it seems wrong
+function adjustYearIfNeeded(date, currentYear) {
+  // If the year is unreasonably far from current year
+  if (Math.abs(date.getFullYear() - currentYear) > 5) {
+    const newDate = new Date(date);
+    newDate.setFullYear(currentYear);
+    return newDate;
+  }
+  return date;
 }
 
 // Format a date to MM/DD/YYYY
